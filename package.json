@@ -1,0 +1,21 @@
+{
+  "name": "english-line-bot-starter",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node lineWebhook.js"
+  },
+  "description": "Super-minimal starter that just generates vocab with OpenAI and prints it.",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@line/bot-sdk": "^10.5.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "googleapis": "^166.0.0",
+    "openai": "^6.8.1"
+  }
+}
