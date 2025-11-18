@@ -21,7 +21,6 @@ const client = new Client(config);
 app.post("/webhook", middleware(config), async (req, res) => {
   try {
     console.log("✅ 收到 LINE webhook：", JSON.stringify(req.body, null, 2));
-
     const events = (req.body && req.body.events) ? req.body.events : [];
 
     if (events.length === 0) {
@@ -41,53 +40,6 @@ function isSingleEnglishWord(text) {
   return /^[A-Za-z\-]+$/.test(text.trim());
 }
 
-// 把查單字結果變成好看的文字
-function formatDictionaryReply(info) {
-  if (info.notFound) {
-    return "😢 這個字我在字典裡查不到，可能不是常見英文單字，要不要確認一下拼字？";
-  }
-  if (info.error) {
-    return "😵 查單字時解析回應失敗了，可以稍後再試一次，或換個單字看看。";
-  }
-
-  const lines = [];
-
-  lines.push(`📚 Word: ${info.word || "（無）"}`);
-  if (info.pos?.length) {
-    lines.push(`詞性：${info.pos.join(" / ")}`);
-  }
-  if (info.zh) {
-    lines.push(`中文：${info.zh}`);
-  }
-
-  if (info.definitions?.length) {
-    lines.push("");
-    lines.push("英文解釋：");
-    lines.push(...info.definitions.map(d => `- ${d}`));
-  }
-
-  if (info.synonyms?.length) {
-    lines.push("");
-    lines.push("同義字：");
-    lines.push(`- ${info.synonyms.join(", ")}`);
-  }
-
-  if (info.examples?.length) {
-    lines.push("");
-    lines.push("例句：");
-    for (const ex of info.examples) {
-      if (ex.en) {
-        lines.push(`- ${ex.en}`);
-        if (ex.zh) {
-          lines.push(`  → ${ex.zh}`);
-        }
-      }
-    }
-  }
-
-  return lines.join("\n");
-}
-
 async function handleEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") {
     return Promise.resolve(null);
@@ -99,9 +51,8 @@ async function handleEvent(event) {
   // 1️⃣ 指令模式：/today
   if (userText === "/today") {
     try {
-      // 這裡先簡單固定一個主題，你之後想改可以再調
       const items = await generateVocab({
-        theme: "daily life",
+        theme: "daily life",   // 之後你想改主題可以改這裡
         count: 5,
         bannedWords: []
       });
@@ -119,7 +70,7 @@ async function handleEvent(event) {
       const replyText = lines.join("\n");
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: replyText.slice(0, 4900) // 防止超過 LINE 長度上限
+        text: replyText.slice(0, 4900)
       });
     } catch (err) {
       console.error("處理 /today 發生錯誤：", err);
@@ -133,11 +84,10 @@ async function handleEvent(event) {
   // 2️⃣ 查單字模式：單一英文單字
   if (isSingleEnglishWord(userText)) {
     try {
-      const info = await lookupWord(userText.toLowerCase());
-      const replyText = formatDictionaryReply(info);
+      const replyTextFromGemini = await lookupWord(userText.toLowerCase());
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: replyText.slice(0, 4900)
+        text: replyTextFromGemini.slice(0, 4900)
       });
     } catch (err) {
       console.error("查單字時發生錯誤：", err);
