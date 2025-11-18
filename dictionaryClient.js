@@ -13,7 +13,7 @@ const genAI = new GoogleGenerativeAI(apiKey);
 
 // 👇 這裡如果你在 vocabGenerator.js 用的是別的 model 名稱
 // （例如 "gemini-1.5-flash-latest"），就把同一個字串複製過來
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
 /**
  * 查單字：直接回一段排版好的文字，不再回 JSON
