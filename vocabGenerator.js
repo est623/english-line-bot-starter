@@ -13,7 +13,7 @@ const genAI = new GoogleGenerativeAI(apiKey);
 
 // ⚠ 若你在別的檔案（例如 dictionaryClient.js）用的是 "gemini-1.5-flash-latest"
 //   就把同一個字串複製過來，保持一致
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
 /**
  * 產生主題單字（給 /today 跟 index.js 用）
