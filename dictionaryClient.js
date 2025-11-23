@@ -11,9 +11,7 @@ if (!apiKey) {
 const genAI = new GoogleGenerativeAI(apiKey);
 const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
-/**
- * 主題列表（AI 必須從這裡挑一個）
- */
+// 跟 /today 一樣的主題清單
 const THEMES = [
   "daily life",
   "travel",
@@ -28,106 +26,72 @@ const THEMES = [
 ];
 
 /**
- * 🔍 檢查是否為真正的英文單字（Datamuse）
- */
-async function isRealEnglishWord(word) {
-  const url = `https://api.datamuse.com/words?sp=${encodeURIComponent(word)}&max=1`;
-
-  const res = await fetch(url);
-  if (!res.ok) return true; // API 掛掉 ≈ 當成正常單字
-
-  const data = await res.json();
-  if (!Array.isArray(data) || data.length === 0) return false;
-
-  return data[0].word.toLowerCase() === word.toLowerCase();
-}
-
-/**
- * 🪄 給錯字提供推薦拼法
- */
-async function suggestWord(word) {
-  const url = `https://api.datamuse.com/sug?s=${encodeURIComponent(word)}&max=3`;
-
-  const res = await fetch(url);
-  if (!res.ok) return null;
-
-  const data = await res.json();
-  if (!Array.isArray(data) || data.length === 0) return null;
-
-  return data[0].word.toLowerCase();
-}
-
-/**
- * 🔎 查單字（主功能）
+ * 查單字：
+ * 回傳：
+ * {
+ *   lineText: "要回給 LINE 的文字",
+ *   item: { theme, word, pos, zh, example, example_zh, cefr } | null
+ * }
  */
 export async function lookupWord(rawWord) {
   const word = rawWord.trim().toLowerCase();
-  if (!word) {
-    return {
-      lineText: "請輸入一個英文單字，我來幫你查 😉",
-      item: null,
-    };
-  }
 
-  // 1️⃣ 先確認是否為真正英文單字
-  try {
-    const ok = await isRealEnglishWord(word);
-    if (!ok) {
-      const suggestion = await suggestWord(word);
-      let msg =
-        `🧐「${rawWord}」看起來不像常見英文單字。\n可能是打錯字或不是字典收錄的字。`;
+  const themesText = THEMES.map((t) => `- ${t}`).join("\n");
 
-      if (suggestion && suggestion !== word) {
-        msg += `\n\n你是不是想查：「${suggestion}」？`;
-      }
-
-      return { lineText: msg, item: null };
-    }
-  } catch (err) {
-    console.warn("⚠ 拼字檢查失敗，跳過：", err);
-  }
-
-  // 2️⃣ 用 Gemini 建立資料
-  const themeList = THEMES.map((t) => `- ${t}`).join("\n");
   const prompt = `
-請用兩部分回覆：
+你是一位友善的雙語英文老師，現在要幫學習者解釋英文單字「${word}」。
 
-【第一部分：一行資料】
-請只給一行，格式如下：
+請務必照下面格式輸出：
+
+第 1 行（給程式用，只能有一行）：
 theme | word | pos | zh | example | example_zh | cefr
 
 說明：
-- theme 從下列列表挑一個：
-${themeList}
-- word：單字
-- pos：n. / v. / adj. / adv.
+- theme：從下列主題中選一個最適合的（字串必須完全一致）：
+${themesText}
+- word：單字本身
+- pos：詞性（例如 n. / v. / adj. / adv.）
 - zh：繁體中文解釋
-- example：自然英文例句（8–20 字）
-- example_zh：例句中文
-- cefr：A1~C2
+- example：8–20 字英文例句
+- example_zh：例句的中文翻譯
+- cefr：從 A1~C2 中選一個（例如 A2 / B1）
 
-【第二部分：簡短補充說明】
-提供使用者看的簡短解釋，不要使用 Markdown 標題，不要用 *** 或 ###。
-以自然文字方式呈現即可。
+第 2 行之後，你可以用自然語言補充說明，但程式只會讀取「第一行」。
+請不要在第一行前面加任何問候語或說明文字。
 `.trim();
 
   const res = await model.generateContent(prompt);
   const text = res.response.text().trim();
   console.log("📄 Gemini 查單字原始回應：\n", text);
 
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  // 逐行切開，找「第一個有 | 的那一行」當資料行，比較保險
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
 
-  const firstLine = lines[0] || "";
-  const restText = lines.slice(1).join("\n").trim();
+  const dataLine = lines.find((l) => l.includes("|")) || "";
+  if (!dataLine) {
+    console.warn("⚠ 查單字：找不到含有 '|' 的資料行，實際回應：", text);
+    const fallbackText =
+      `😵 我沒辦法好好解析「${word}」這個字的解釋，` +
+      `可以先檢查一下拼字，再試一次看看嗎？`;
+    return { lineText: fallbackText, item: null };
+  }
 
-  // 3️⃣ 解析第一行
-  const parts = firstLine.split("|").map((p) => p.trim());
+  // 解析：theme | word | pos | zh | example | example_zh | cefr
+  const parts = dataLine.split("|").map((p) => p.trim());
   if (parts.length < 7) {
-    console.warn("⚠ 無法解析 AI 資料行，直接回傳全文");
-    return { lineText: text, item: null };
+    console.warn("⚠ 查單字：資料行欄位不足，dataLine =", dataLine);
+    const fallbackText =
+      `😵 我沒辦法好好解析「${word}」這個字的解釋，` +
+      `可以先檢查一下拼字，再試一次看看嗎？`;
+    return { lineText: fallbackText, item: null };
   }
 
   const [themeRaw, w, pos, zh, example, example_zh, cefrRaw] = parts;
+
+  // 主題如果不在清單裡，就 fallback 成 "lookup"
   const theme = THEMES.includes(themeRaw) ? themeRaw : "lookup";
   const cefr = (cefrRaw || "").toUpperCase();
 
@@ -138,10 +102,10 @@ ${themeList}
     zh: zh || "",
     example: example || "",
     example_zh: example_zh || "",
-    cefr,
+    cefr: cefr || "",
   };
 
-  // 4️⃣ LINE 回覆版本（乾淨版，不會出現一堆 *）
+  // 給 LINE 用的簡潔卡片：不再附上 Gemini 自由發揮的一大段說明
   const replyLines = [
     `📚 Word: ${item.word}`,
     item.pos ? `詞性：${item.pos}` : "",
@@ -151,11 +115,9 @@ ${themeList}
     "例句：",
     item.example ? `- ${item.example}` : "",
     item.example_zh ? `→ ${item.example_zh}` : "",
-    "",
-    restText ? `補充說明：\n${restText}` : "",
   ];
 
-  const lineText = replyLines.filter(Boolean).join("\n");
+  const lineText = replyLines.filter((l) => l !== "").join("\n");
 
   return { lineText, item };
 }
