@@ -5,6 +5,7 @@ import { middleware, Client } from "@line/bot-sdk";
 import { lookupWord } from "./dictionaryClient.js";
 import { generateVocab } from "./vocabGenerator.js";
 import { getTodayVocab, appendVocabRows } from "./googleSheetClient.js";
+import { getThemeForDate } from "./themeState.js";
 
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -50,14 +51,17 @@ async function handleEvent(event) {
   console.log("👤 使用者輸入：", userText);
 
   // 1️⃣ 指令模式：/today
+  // 1️⃣ 指令模式：/today
   if (userText === "/today") {
-    const THEME = "daily life";   // 之後你想改主題，可以從這裡開始擴充
     const COUNT_PER_DAY = 5;
 
     try {
       const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
-      // 先從試算表抓「今天 / 這個主題」已經有的單字
+      // ✅ 問「主題管理員」：今天到底用哪一個主題
+      const THEME = getThemeForDate(todayStr);
+
+      // 然後用這個主題，去試算表找今天的單字
       const existing = await getTodayVocab({
         theme: THEME,
         dateStr: todayStr,
