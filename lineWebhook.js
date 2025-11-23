@@ -118,28 +118,31 @@ async function handleEvent(event) {
   }
 
   // 2️⃣ 查單字模式：單一英文單字
-// 2️⃣ 查單字模式：單一英文單字
-if (isSingleEnglishWord(userText)) {
-  try {
-    const { lineText, item } = await lookupWord(userText);
+  if (isSingleEnglishWord(userText)) {
+    try {
+      const { lineText, item } = await lookupWord(userText.toLowerCase());
 
-    // 有成功解析到 item 才寫入試算表
-    if (item) {
-      await appendVocabRows([item], { source: "lookup" });
+      // 先回覆給使用者
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: lineText.slice(0, 4900)
+      });
+
+      // 只有真的單字才寫入試算表
+      if (item) {
+        await appendVocabRows([item], { source: "lookup" });
+      }
+
+      return;
+    } catch (err) {
+      console.error("查單字時發生錯誤：", err);
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "😵 查單字時發生錯誤，可以稍後再試一次。"
+      });
     }
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: lineText.slice(0, 4900),
-    });
-  } catch (err) {
-    console.error("查單字時發生錯誤：", err);
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "😵 查單字時發生錯誤，可以稍後再試一次。",
-    });
   }
-}
+
 
 
   // 3️⃣ 其他訊息：簡單提示
