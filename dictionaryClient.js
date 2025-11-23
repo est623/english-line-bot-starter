@@ -1,5 +1,5 @@
 // dictionaryClient.js
-//123測試
+
 import "dotenv/config";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
@@ -42,47 +42,39 @@ export async function lookupWord(rawWord) {
   const word = rawWord.trim().toLowerCase();
 
   const prompt = `
-你是一位友善的雙語英文老師，幫學習者檢查並解釋單字「${word}」。
+你是一位友善的雙語英文老師，現在要協助使用者查單字「${word}」。
 
-請先判斷這是不是一個「真實且常見的英文單字」。
+⚠ 請務必只輸出「精簡格式」，不能輸出多餘解釋、不能加入補充字義、不能使用 Markdown 或任何符號（如 **、###、---）。
 
-【第一部分：一行資料，給程式用】
-- 請只輸出「一行」，用半形直線 | 分隔，總共 8 個欄位：
-  status | theme | word | pos | zh | example | example_zh | cefr
+【第一行：一行資料，給程式用】
+請用一行輸出，格式如下，用 | 分隔：
+word | pos | zh | example | example_zh | cefr
 
-欄位說明：
-- status：如果是正常英文單字，填入 REAL；
-          如果不是常見英文單字（例如亂打的字母、明顯錯字），填入 NOT_WORD。
-- theme：當 status 為 REAL 時，必須從下列主題中選一個字串（需完全一致）：
-${themesText}
-         當 status 為 NOT_WORD 時，可以留空。
+說明：
 - word：單字本身
-- pos：詞性，使用 n. / v. / adj. / adv. 等縮寫
-- zh：自然的繁體中文解釋
-- example：8–20 字自然英文例句
-- example_zh：例句的繁體中文翻譯
-- cefr：A1~C2 其中一個等級
+- pos：詞性（n. / v. / adj. / adv.）
+- zh：最常用、最核心的繁體中文意思（只給一個）
+- example：一句 8–20 字的英文例句
+- example_zh：例句翻譯
+- cefr：A1~C2
 
-⚠ 重點：
-- 第一行一定要是「資料行」，不得輸出欄位名稱（例如 word, pos, zh）。
-- 第一行不能是示範格式，只能是實際內容。
+【第二部分：給使用者看的成品】
+請輸出以下「固定格式」，禁止任意添加文字、說明、補充句子。
 
-【第二部分：給使用者看的詳細說明】
-請全部使用「純文字」，禁止使用 Markdown 標記，例如 **、*、###、---、>、- 。
-請使用自然段落排版，不要任何符號開頭。
+格式如下：
 
-建議格式如下（可調整，但請不要出現任何 Markdown）：
+📚 Word: word
+詞性：pos
+中文：zh
+CEFR：cefr
+例句：
+- example
+→ example_zh
 
-詞性：
-中文：
-英文簡短解釋：
-常見搭配：
-用法補充：
-例句（若需要額外例句可以補充）：
+⚠ 不能多加任何其他內容。
+⚠ 不能寫分析、不能寫用法、不能寫語源、不能寫多個解釋。
+⚠ 第二部分只准用這 6 行內容。
 
-⚠ 重要：
-- 第二部分不能出現 *, **, ###, ---, 或任何 Markdown 語法。
-- 第二部分只能是純文字，使用換行分段。
 
 `.trim();
 
