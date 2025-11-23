@@ -1,52 +1,145 @@
+// googleSheetClient.js
+import "dotenv/config";
 import { google } from "googleapis";
-import path from "path";
-import { fileURLToPath } from "url";
 
-// 讓 __dirname 在 ES module 也能用
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
+const SHEET_NAME = "Vocabulary"; // 你的工作表名稱（底下那個分頁名）
 
-// 你的 service account JSON（放在專案根目錄）
-const KEY_FILE = path.join(__dirname, "service-account-key.json");
+if (!SPREADSHEET_ID) {
+  console.error("❌ 缺少 GOOGLE_SHEET_ID，請在 .env / Render 環境變數設定");
+  throw new Error("Missing GOOGLE_SHEET_ID");
+}
 
-// 這裡記得換成你的 Google Sheet ID
-// Spreadsheet URL: https://docs.google.com/spreadsheets/d/【這段字就是 ID】/edit
-const SPREADSHEET_ID = "1EyUk_u_jwxCxc0_ZhYQhGVQ1BcOTHy-BpPi_5nFt0pw";
+// 建立 Google Sheets Client（重複呼叫時共用同一個 auth）
+let _sheets = null;
 
-// 工作表名稱（通常是第一個分頁叫這個）
-const SHEET_NAME = "vocab";
+async function getSheets() {
+  if (_sheets) return _sheets;
 
-async function getSheetsClient() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw) {
+    console.error("❌ 缺少 GOOGLE_SERVICE_ACCOUNT_JSON，請在環境變數放 service account JSON");
+    throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON");
+  }
+
+  let credentials;
+  try {
+    credentials = JSON.parse(raw);
+  } catch (e) {
+    console.error("❌ 無法解析 GOOGLE_SERVICE_ACCOUNT_JSON，請確認格式是否為合法 JSON");
+    throw e;
+  }
+
   const auth = new google.auth.GoogleAuth({
-    keyFile: KEY_FILE,
+    credentials,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
   const client = await auth.getClient();
-  return google.sheets({ version: "v4", auth: client });
+  _sheets = google.sheets({ version: "v4", auth: client });
+  return _sheets;
 }
 
-export async function appendVocabRows(items) {
-  const sheets = await getSheetsClient();
+/**
+ * 把多筆單字 append 到試算表
+ * items: [{
+ *   theme, word, pos, zh, example, example_zh, cefr
+ * }]
+ * options.source: "today" / "lookup" / "manual" ...
+ */
+export async function appendVocabRows(items, options = {}) {
+  const sheets = await getSheets();
 
-  const values = items.map(item => [
-    item.theme,
-    item.word,
-    item.pos,
-    item.zh,
-    item.example,
-    item.example_zh,
-    item.cefr,
+  const nowIso = new Date().toISOString();
+  const source = options.source || "";
+
+  const values = items.map((item) => [
+    item.theme || "",
+    item.word || "",
+    item.pos || "",
+    item.zh || "",
+    item.example || item.example_en || "",
+    item.example_zh || "",
+    item.cefr || "",
+    source,
+    nowIso,
   ]);
+
+  const range = `${SHEET_NAME}!A2:I`; // 從第二列開始往下加
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
-    range: `'${SHEET_NAME}'!A:G`,
+    range,
     valueInputOption: "RAW",
-    requestBody: { values },
+    requestBody: {
+      values,
+    },
   });
 
-  console.log(`🌟 已寫入 Google Sheet：${items.length} 筆單字`);
+  console.log(`✅ 已寫入試算表 ${values.length} 筆（source=${source}）`);
 }
 
-// 想生哪個主題都可以改const themes = ["daily life","travel","school","work","health","small talk","food","email","presentation","customer service"];
+/**
+ * 讀出「某天、某主題」已經存在的單字
+ * dateStr: "YYYY-MM-DD"（只比日期，不比時間）
+ * limit: 最多回幾筆
+ *
+ * 回傳格式：
+ * [{
+ *   theme, word, pos, zh, example, example_zh, cefr, source, created_at
+ * }]
+ */
+export async function getTodayVocab({ theme, dateStr, limit = 10 }) {
+  const sheets = await getSheets();
+
+  const range = `${SHEET_NAME}!A2:I`;
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+
+  const rows = res.data.values || [];
+  const results = [];
+
+  for (const row of rows) {
+    const [
+      rowTheme,
+      word,
+      pos,
+      zh,
+      example,
+      example_zh,
+      cefr,
+      source,
+      created_at,
+    ] = row;
+
+    if (!rowTheme || !word) continue;
+    if (rowTheme !== theme) continue;
+    if (!created_at) continue;
+
+    // 只比日期（前 10 碼）
+    const rowDate = String(created_at).slice(0, 10);
+    if (rowDate !== dateStr) continue;
+
+    results.push({
+      theme: rowTheme,
+      word,
+      pos,
+      zh,
+      example,
+      example_zh,
+      cefr,
+      source,
+      created_at,
+    });
+
+    if (results.length >= limit) break;
+  }
+
+  console.log(
+    `📘 getTodayVocab：${dateStr} / ${theme} 讀到 ${results.length} 筆`
+  );
+  return results;
+}

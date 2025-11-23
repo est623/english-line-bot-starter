@@ -4,6 +4,7 @@ import express from "express";
 import { middleware, Client } from "@line/bot-sdk";
 import { lookupWord } from "./dictionaryClient.js";
 import { generateVocab } from "./vocabGenerator.js";
+import { getTodayVocab, appendVocabRows } from "./googleSheetClient.js";
 
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -50,33 +51,64 @@ async function handleEvent(event) {
 
   // 1️⃣ 指令模式：/today
   if (userText === "/today") {
+    const THEME = "daily life";   // 之後你想改主題，可以從這裡開始擴充
+    const COUNT_PER_DAY = 5;
+
     try {
-      const items = await generateVocab({
-        theme: "daily life",   // 之後你想改主題可以改這裡
-        count: 5,
-        bannedWords: []
+      const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+      // 先從試算表抓「今天 / 這個主題」已經有的單字
+      const existing = await getTodayVocab({
+        theme: THEME,
+        dateStr: todayStr,
+        limit: COUNT_PER_DAY,
       });
 
-      const lines = ["📅 今日主題單字（daily life）："];
+      let items = [...existing];
+
+      // 如果還不夠 5 個，就跟 Gemini 要「缺的數量」，然後寫回試算表
+      if (items.length < COUNT_PER_DAY) {
+        const need = COUNT_PER_DAY - items.length;
+
+        const newItems = await generateVocab({
+          theme: THEME,
+          count: need,
+          bannedWords: items.map((i) => i.word),
+        });
+
+        // 寫進試算表，source 標記為 "today"
+        await appendVocabRows(newItems, { source: "today" });
+
+        items = items.concat(newItems);
+      }
+
+      if (items.length === 0) {
+        return client.replyMessage(event.replyToken, {
+          type: "text",
+          text: "今天的單字好像還沒準備好，稍後再試一次看看 🥲",
+        });
+      }
+
+      const lines = [`📅 今日主題單字（${THEME}）：`];
       for (const item of items) {
         lines.push(
-          `\n🔹 ${item.word} (${item.pos})`,
-          `中文：${item.zh}`,
-          `例句：${item.example}`,
-          `→ ${item.example_zh}`
+          `\n🔹 ${item.word} (${item.pos || ""})`,
+          `中文：${item.zh || ""}`,
+          `例句：${item.example || item.example_en || ""}`,
+          `→ ${item.example_zh || ""}`
         );
       }
 
       const replyText = lines.join("\n");
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: replyText.slice(0, 4900)
+        text: replyText.slice(0, 4900),
       });
     } catch (err) {
       console.error("處理 /today 發生錯誤：", err);
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: "😢 產生今日單字時發生錯誤，可以稍後再試一次。"
+        text: "😢 產生 /today 單字或讀取試算表時發生錯誤，可以稍後再試一次。",
       });
     }
   }
@@ -102,7 +134,7 @@ async function handleEvent(event) {
   const helpText =
     '嗨，我是你的英文單字小幫手 👋\n\n' +
     '你可以這樣跟我互動：\n' +
-    '• 輸入 /today　→ 給你 5 個今日主題單字\n' +
+    '• 輸入 /today　→ 給你 5 個今日主題單字（會記錄在試算表）\n' +
     '• 輸入一個英文單字（例如：abandon）→ 查意思＋同義字＋例句\n';
 
   return client.replyMessage(event.replyToken, {
