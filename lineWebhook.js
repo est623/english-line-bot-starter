@@ -4,7 +4,7 @@ import express from "express";
 import { middleware, Client } from "@line/bot-sdk";
 import { lookupWord } from "./dictionaryClient.js";
 import { generateVocab } from "./vocabGenerator.js";
-import { getTodayVocab, appendVocabRows } from "./googleSheetClient.js";
+import { getTodayVocab, appendVocabRows, checkWordExists } from "./googleSheetClient.js";
 import { getThemeForDate } from "./themeState.js";
 
 const config = {
@@ -117,16 +117,20 @@ async function handleEvent(event) {
     }
   }
 
-  // 2️⃣ 查單字模式：單一英文單字
+ // 2️⃣ 查單字模式：單一英文單字
 if (isSingleEnglishWord(userText)) {
   try {
-    // 會拿到 { lineText, item }
     const { lineText, item } = await lookupWord(userText.toLowerCase());
 
-    // ✅ 只有「正常單字」時才寫入試算表
-    //    item 為 null 時（NOT_WORD）就不寫
     if (item) {
-      await appendVocabRows([item], { source: "lookup" });
+      const exists = await checkWordExists(item.word);
+
+      if (!exists) {
+        console.log(`📌 新單字：寫入試算表 → ${item.word}`);
+        await appendVocabRows([item], { source: "lookup" });
+      } else {
+        console.log(`⚠ 已存在：不寫入 → ${item.word}`);
+      }
     }
 
     return client.replyMessage(event.replyToken, {
@@ -141,7 +145,6 @@ if (isSingleEnglishWord(userText)) {
     });
   }
 }
-
 
 
 

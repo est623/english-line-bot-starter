@@ -3,14 +3,14 @@ import "dotenv/config";
 import { google } from "googleapis";
 
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SHEET_NAME = "Vocabulary"; // 你的工作表名稱（底下那個分頁名）
+const SHEET_NAME = "Vocabulary"; // 你的工作表名稱
 
 if (!SPREADSHEET_ID) {
   console.error("❌ 缺少 GOOGLE_SHEET_ID，請在 .env / Render 環境變數設定");
   throw new Error("Missing GOOGLE_SHEET_ID");
 }
 
-// 建立 Google Sheets Client（重複呼叫時共用同一個 auth）
+// 建立 Google Sheets Client（共用）
 let _sheets = null;
 
 async function getSheets() {
@@ -41,11 +41,7 @@ async function getSheets() {
 }
 
 /**
- * 把多筆單字 append 到試算表
- * items: [{
- *   theme, word, pos, zh, example, example_zh, cefr
- * }]
- * options.source: "today" / "lookup" / "manual" ...
+ * 🟦 寫入多筆單字到試算表
  */
 export async function appendVocabRows(items, options = {}) {
   const sheets = await getSheets();
@@ -65,29 +61,20 @@ export async function appendVocabRows(items, options = {}) {
     nowIso,
   ]);
 
-  const range = `${SHEET_NAME}!A2:I`; // 從第二列開始往下加
+  const range = `${SHEET_NAME}!A2:I`;
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
     range,
     valueInputOption: "RAW",
-    requestBody: {
-      values,
-    },
+    requestBody: { values },
   });
 
   console.log(`✅ 已寫入試算表 ${values.length} 筆（source=${source}）`);
 }
 
 /**
- * 讀出「某天、某主題」已經存在的單字
- * dateStr: "YYYY-MM-DD"（只比日期，不比時間）
- * limit: 最多回幾筆
- *
- * 回傳格式：
- * [{
- *   theme, word, pos, zh, example, example_zh, cefr, source, created_at
- * }]
+ * 🟦 讀取今天已經產生過的單字（給 /today 用）
  */
 export async function getTodayVocab({ theme, dateStr, limit = 10 }) {
   const sheets = await getSheets();
@@ -119,7 +106,6 @@ export async function getTodayVocab({ theme, dateStr, limit = 10 }) {
     if (rowTheme !== theme) continue;
     if (!created_at) continue;
 
-    // 只比日期（前 10 碼）
     const rowDate = String(created_at).slice(0, 10);
     if (rowDate !== dateStr) continue;
 
@@ -138,8 +124,29 @@ export async function getTodayVocab({ theme, dateStr, limit = 10 }) {
     if (results.length >= limit) break;
   }
 
-  console.log(
-    `📘 getTodayVocab：${dateStr} / ${theme} 讀到 ${results.length} 筆`
-  );
+  console.log(`📘 getTodayVocab：${dateStr} / ${theme} 讀到 ${results.length} 筆`);
   return results;
+}
+
+/**
+ * 🟦 判斷某個單字是否已經存在於試算表（避免重複寫入）
+ */
+export async function checkWordExists(word) {
+  const sheets = await getSheets();
+
+  const range = `${SHEET_NAME}!B:B`; // B 欄：單字
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+
+  const rows = res.data.values || [];
+
+  // 跳過第一列（欄位名稱）
+  return rows.some(
+    (row, index) =>
+      index > 0 &&
+      row[0] &&
+      row[0].trim().toLowerCase() === word.trim().toLowerCase()
+  );
 }
