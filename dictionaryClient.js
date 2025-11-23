@@ -11,6 +11,22 @@ if (!apiKey) {
 const genAI = new GoogleGenerativeAI(apiKey);
 const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
+// 跟 /today 一樣的一組主題
+const THEMES = [
+  "daily life",
+  "travel",
+  "school",
+  "work",
+  "health",
+  "small talk",
+  "food",
+  "email",
+  "presentation",
+  "customer service"
+];
+
+const themesText = THEMES.map(t => `- ${t}`).join("\n");
+
 /**
  * 查單字：
  * 回傳：
@@ -29,27 +45,28 @@ export async function lookupWord(rawWord) {
 
 【第一部分：一行資料，給程式用】
 - 僅一行，格式如下（用半形直線 | 分隔）：
-  word | pos | zh | example | example_zh | cefr
+  theme | word | pos | zh | example | example_zh | cefr
 - 說明：
+  - theme：從下列主題列表中挑選其一（字串需完全一致）：
+${themesText}
   - word：單字本身
-  - pos：詞性，n. / v. / adj. / adv. 其中一種（或兩種用逗號分隔也可以）
-  - zh：自然的繁體中文解釋即可
-  - example：8–20 字自然英文例句
-  - example_zh：例句的繁體中文翻譯
-  - cefr：請在 A1~C2 中選一個最接近的等級（例如 A2 / B1）
+  - pos：詞性，n. / v. / adj. / adv. 等
+  - zh：繁體中文解釋
+  - example：8–20 字英文例句
+  - example_zh：例句的翻譯
+  - cefr：A1~C2 之間選一個
 
 【第二部分：給使用者看的詳細說明】
-- 從下一行開始，你可以自由用多行說明，但請盡量維持下面結構：
-  詞性：
-  中文：
-  英文解釋（簡短一點）：
-  同義字：
-  例句：
-  → 中文翻譯：
+- 詞性：
+- 中文：
+- 英文解釋（簡短）：
+- 同義字：
+- 例句：
+→ 中文翻譯：
 
 ⚠ 重點：
-- 第一行一定要是「資料行」，中間用 | 分隔。
-- 第二部分開始可以排版漂亮一點，但不要再出現 JSON。
+- 第一行一定要是「資料行」，且一定要有 7 個欄位。
+- 第二部分開始排版自由。
   `.trim();
 
   const res = await model.generateContent(prompt);
@@ -60,22 +77,25 @@ export async function lookupWord(rawWord) {
   const firstLine = lines.find(l => l.length > 0) || "";
   const restText = lines.slice(lines.indexOf(firstLine) + 1).join("\n").trim();
 
-  // 解析第一行：word | pos | zh | example | example_zh | cefr
+  // 解析第一行：theme | word | pos | zh | example | example_zh | cefr
   const parts = firstLine.split("|").map(p => p.trim());
-  if (parts.length < 5) {
+  if (parts.length < 7) {
     console.warn("⚠ 查單字：無法解析第一行，回傳原始文字");
     return {
-      lineText: text,   // 退而求其次，直接把整段回給 LINE
+      lineText: text,
       item: null
     };
   }
 
-  const [w, pos, zh, example, example_zh, cefrRaw] = parts;
+  const [themeRaw, w, pos, zh, example, example_zh, cefrRaw] = parts;
   const cefr = (cefrRaw || "").toUpperCase();
 
-  // 統一成跟 /today 一樣的欄位
+  // 保護：AI 亂給主題時 fallback
+  const theme = THEMES.includes(themeRaw) ? themeRaw : "lookup";
+
+  // ✅ 唯一的一個 item（不要再宣告第二次了）
   const item = {
-    theme: "lookup",     // 也可以改成 "查字"
+    theme,                 // 這裡就已經是「自動歸類主題」
     word: w || word,
     pos: pos || "",
     zh: zh || "",
@@ -84,7 +104,7 @@ export async function lookupWord(rawWord) {
     cefr: cefr || ""
   };
 
-  // 給 LINE 的回覆文字（你可以之後再微調排版）
+  // 給 LINE 的回覆文字
   const replyLines = [
     `📚 Word: ${item.word}`,
     item.pos ? `詞性：${item.pos}` : "",
@@ -96,7 +116,7 @@ export async function lookupWord(rawWord) {
     item.example_zh ? `→ ${item.example_zh}` : "",
   ];
 
-  // 把下面 Gemini 自由發揮的內容接在後面（選擇性）
+  // 把 Gemini 第二部分的說明接在後面（有就加，沒有就算了）
   if (restText) {
     replyLines.push("", restText);
   }
