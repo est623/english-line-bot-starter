@@ -12,22 +12,6 @@ if (!apiKey) {
 const genAI = new GoogleGenerativeAI(apiKey);
 const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
-// 這個主題清單要跟你 /today 用的一樣
-const THEMES = [
-  "daily life",
-  "travel",
-  "school",
-  "work",
-  "health",
-  "small talk",
-  "food",
-  "email",
-  "presentation",
-  "customer service"
-];
-
-const themesText = THEMES.map((t) => `- ${t}`).join("\n");
-
 /**
  * 查單字：
  * 回傳：
@@ -44,24 +28,26 @@ export async function lookupWord(rawWord) {
   const prompt = `
 你是一位友善的雙語英文老師，現在要協助使用者查單字「${word}」。
 
-⚠ 請務必只輸出「精簡格式」，不能輸出多餘解釋、不能加入補充字義、不能使用 Markdown 或任何符號（如 **、###、---）。
+第一步：請先判斷這是不是正常的英文單字。
 
 【第一行：一行資料，給程式用】
-請用一行輸出，格式如下，用 | 分隔：
-word | pos | zh | example | example_zh | cefr
+只輸出一行，使用半形直線 | 分隔，格式必須完全符合：
+
+status | word | pos | zh | example | example_zh | cefr
 
 說明：
-- word：單字本身
-- pos：詞性（n. / v. / adj. / adv.）
-- zh：最常用、最核心的繁體中文意思（只給一個）
-- example：一句 8–20 字的英文例句
-- example_zh：例句翻譯
-- cefr：A1~C2
+- status：如果是正常英文單字，請輸出 REAL；如果不是正常英文單字或很罕見的亂碼，請輸出 NOT_WORD。
+- word：單字本身（小寫即可）
+- pos：詞性（n. / v. / adj. / adv. 其一，必要時可以 n., v. 這樣）
+- zh：最常用、最核心的繁體中文意思（只給一個簡短解釋）
+- example：一個 8–20 字自然英文例句
+- example_zh：例句的繁體中文翻譯
+- cefr：A1~C2 中選一個最適合的等級
 
-【第二部分：給使用者看的成品】
-請輸出以下「固定格式」，禁止任意添加文字、說明、補充句子。
+如果 status 為 NOT_WORD，其餘欄位可以留空。
 
-格式如下：
+【第二部分：給使用者看的成品（只在 REAL 時需要）】
+在第一行之後，請輸出以下「固定格式」，不要多加任何其他文字、說明或條列：
 
 📚 Word: word
 詞性：pos
@@ -71,24 +57,24 @@ CEFR：cefr
 - example
 → example_zh
 
-⚠ 不能多加任何其他內容。
-⚠ 不能寫分析、不能寫用法、不能寫語源、不能寫多個解釋。
-⚠ 第二部分只准用這 6 行內容。
-
-
+⚠ 禁止輸出任何額外說明、其他例句、星號、Markdown 標記或段落。
+⚠ 只允許以上 6 行內容。
 `.trim();
 
   const res = await model.generateContent(prompt);
   const text = res.response.text().trim();
   console.log("📄 Gemini 查單字原始回應：\n", text);
 
-  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-  const firstLine = lines[0] || "";
-  const restText = lines.slice(1).join("\n").trim();
+  // 先抓第一行（status | word | pos | zh | example | example_zh | cefr）
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
 
-  // 解析第一行：status | theme | word | pos | zh | example | example_zh | cefr
+  const firstLine = lines[0] || "";
+
   const parts = firstLine.split("|").map((p) => p.trim());
-  if (parts.length < 8) {
+  if (parts.length < 7) {
     console.warn("⚠ 查單字：無法解析第一行，回傳原始文字");
     return {
       lineText: text,
@@ -96,18 +82,17 @@ CEFR：cefr
     };
   }
 
-  const [statusRaw, themeRaw, wRaw, pos, zh, example, example_zh, cefrRaw] = parts;
+  const [statusRaw, wRaw, pos, zh, example, example_zh, cefrRaw] = parts;
   const status = (statusRaw || "").toUpperCase();
   const cefr = (cefrRaw || "").toUpperCase();
   const w = wRaw || word;
 
   // ========= 情況一：不是正常單字（NOT_WORD） =========
   if (status !== "REAL") {
-    // 給使用者看的訊息（用模型第二段的說明，如果沒有就自己組一段）
-    const fallbackMsg =
-      `看起來「${word}」不是常見的英文單字，可能是打錯字或是自創字喔！` +
-      `\n\n可以再檢查看看拼字，或改查另一個單字～`;
-    const lineText = restText || fallbackMsg;
+    const lineText =
+      `看起來「${word}」不是常見的英文單字，` +
+      `可能是打錯字或是自創字喔！\n\n` +
+      `可以再檢查看看拼字，或改查另一個單字～`;
 
     return {
       lineText,
@@ -116,10 +101,8 @@ CEFR：cefr
   }
 
   // ========= 情況二：正常單字，整理成統一格式 =========
-  const theme = THEMES.includes(themeRaw) ? themeRaw : "lookup";
-
   const item = {
-    theme,
+    theme: "lookup",          // 查單字就統一歸類在 lookup
     word: w,
     pos: pos || "",
     zh: zh || "",
@@ -128,7 +111,7 @@ CEFR：cefr
     cefr: cefr || "",
   };
 
-  // 給 LINE 的卡片文字
+  // 回給 LINE 的簡潔卡片
   const replyLines = [
     `📚 Word: ${item.word}`,
     item.pos ? `詞性：${item.pos}` : "",
@@ -139,10 +122,6 @@ CEFR：cefr
     item.example ? `- ${item.example}` : "",
     item.example_zh ? `→ ${item.example_zh}` : "",
   ];
-
-  if (restText) {
-    replyLines.push("", "補充說明：", restText);
-  }
 
   const lineText = replyLines.filter((l) => l !== "").join("\n");
 
