@@ -118,21 +118,32 @@ async function handleEvent(event) {
   }
 
   // 2️⃣ 查單字模式：單一英文單字
-  if (isSingleEnglishWord(userText)) {
-    try {
-      const replyTextFromGemini = await lookupWord(userText.toLowerCase());
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: replyTextFromGemini.slice(0, 4900)
-      });
-    } catch (err) {
-      console.error("查單字時發生錯誤：", err);
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "😵 查單字時發生錯誤，可以稍後再試一次。"
-      });
+if (isSingleEnglishWord(userText)) {
+  try {
+    const { lineText, item } = await lookupWord(userText.toLowerCase());
+
+    // 如果有成功解析出 item，就順便寫進試算表
+    if (item) {
+      try {
+        await appendVocabRows([item], { source: "lookup" });
+      } catch (sheetErr) {
+        console.error("寫入試算表（查字）失敗：", sheetErr);
+        // 試算表失敗就算了，不要影響回覆
+      }
     }
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: (lineText || "查詢完成，但沒有內容可顯示。").slice(0, 4900)
+    });
+  } catch (err) {
+    console.error("查單字時發生錯誤：", err);
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "😵 查單字時發生錯誤，可以稍後再試一次。"
+    });
   }
+}
 
   // 3️⃣ 其他訊息：簡單提示
   const helpText =
