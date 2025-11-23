@@ -118,30 +118,30 @@ async function handleEvent(event) {
   }
 
   // 2️⃣ 查單字模式：單一英文單字
-  if (isSingleEnglishWord(userText)) {
-    try {
-      const { lineText, item } = await lookupWord(userText.toLowerCase());
+if (isSingleEnglishWord(userText)) {
+  try {
+    // 會拿到 { lineText, item }
+    const { lineText, item } = await lookupWord(userText.toLowerCase());
 
-      // 先回覆給使用者
-      await client.replyMessage(event.replyToken, {
-        type: "text",
-        text: lineText.slice(0, 4900)
-      });
-
-      // 只有真的單字才寫入試算表
-      if (item) {
-        await appendVocabRows([item], { source: "lookup" });
-      }
-
-      return;
-    } catch (err) {
-      console.error("查單字時發生錯誤：", err);
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "😵 查單字時發生錯誤，可以稍後再試一次。"
-      });
+    // ✅ 只有「正常單字」時才寫入試算表
+    //    item 為 null 時（NOT_WORD）就不寫
+    if (item) {
+      await appendVocabRows([item], { source: "lookup" });
     }
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: lineText.slice(0, 4900)
+    });
+  } catch (err) {
+    console.error("查單字時發生錯誤：", err);
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "😵 查單字時發生錯誤，可以稍後再試一次。"
+    });
   }
+}
+
 
 
 
