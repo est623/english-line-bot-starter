@@ -1,4 +1,5 @@
 // dictionaryClient.js
+//123測試
 import "dotenv/config";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
