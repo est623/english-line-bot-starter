@@ -51,71 +51,84 @@ async function handleEvent(event) {
   console.log("👤 使用者輸入：", userText);
 
   // 1️⃣ 指令模式：/today
-  // 1️⃣ 指令模式：/today
-  if (userText === "/today") {
-    const COUNT_PER_DAY = 5;
+if (userText === "/today") {
+  const COUNT_PER_DAY = 5;
 
-    try {
-      const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  try {
+    function getTodayTaipeiDateStr() {
+      const now = new Date();
+      const formatter = new Intl.DateTimeFormat("zh-TW", {
+        timeZone: "Asia/Taipei",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      const parts = formatter.formatToParts(now);
+      const y = parts.find(p => p.type === "year").value;
+      const m = parts.find(p => p.type === "month").value;
+      const d = parts.find(p => p.type === "day").value;
+      return `${y}-${m}-${d}`;
+    }
 
-      // ✅ 問「主題管理員」：今天到底用哪一個主題
-      const THEME = getThemeForDate(todayStr);
+    const todayStr = getTodayTaipeiDateStr(); // ★ 用台灣日期
 
-      // 然後用這個主題，去試算表找今天的單字
-      const existing = await getTodayVocab({
+    // 取得今日主題
+    const THEME = getThemeForDate(todayStr);
+
+    // 讀今天是否已有資料
+    const existing = await getTodayVocab({
+      theme: THEME,
+      dateStr: todayStr,
+      limit: COUNT_PER_DAY,
+    });
+
+    let items = [...existing];
+
+    if (items.length < COUNT_PER_DAY) {
+      const need = COUNT_PER_DAY - items.length;
+
+      const newItems = await generateVocab({
         theme: THEME,
-        dateStr: todayStr,
-        limit: COUNT_PER_DAY,
+        count: need,
+        bannedWords: items.map(i => i.word),
       });
 
-      let items = [...existing];
+      await appendVocabRows(newItems, { source: "today" });
 
-      // 如果還不夠 5 個，就跟 Gemini 要「缺的數量」，然後寫回試算表
-      if (items.length < COUNT_PER_DAY) {
-        const need = COUNT_PER_DAY - items.length;
+      items = items.concat(newItems);
+    }
 
-        const newItems = await generateVocab({
-          theme: THEME,
-          count: need,
-          bannedWords: items.map((i) => i.word),
-        });
-
-        // 寫進試算表，source 標記為 "today"
-        await appendVocabRows(newItems, { source: "today" });
-
-        items = items.concat(newItems);
-      }
-
-      if (items.length === 0) {
-        return client.replyMessage(event.replyToken, {
-          type: "text",
-          text: "今天的單字好像還沒準備好，稍後再試一次看看 🥲",
-        });
-      }
-
-      const lines = [`📅 今日主題單字（${THEME}）：`];
-      for (const item of items) {
-        lines.push(
-          `\n🔹 ${item.word} (${item.pos || ""})`,
-          `中文：${item.zh || ""}`,
-          `例句：${item.example || item.example_en || ""}`,
-          `→ ${item.example_zh || ""}`
-        );
-      }
-
-      const replyText = lines.join("\n");
+    if (items.length === 0) {
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: replyText.slice(0, 4900),
-      });
-    } catch (err) {
-      console.error("處理 /today 發生錯誤：", err);
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "😢 產生 /today 單字或讀取試算表時發生錯誤，可以稍後再試一次。",
+        text: "今天的單字好像還沒準備好，稍後再試一次看看 🥲",
       });
     }
+
+    const lines = [`📅 今日主題單字（${THEME}）：`];
+    for (const item of items) {
+      lines.push(
+        `\n🔹 ${item.word} (${item.pos || ""})`,
+        `中文：${item.zh || ""}`,
+        `例句：${item.example || item.example_en || ""}`,
+        `→ ${item.example_zh || ""}`
+      );
+    }
+
+    const replyText = lines.join("\n");
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: replyText.slice(0, 4900),
+    });
+
+  } catch (err) {
+    console.error("處理 /today 發生錯誤：", err);
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "😢 產生 /today 單字或讀取試算表時發生錯誤，可以稍後再試一次。",
+    });
   }
+}
 
  // 2️⃣ 查單字模式：單一英文單字
 if (isSingleEnglishWord(userText)) {

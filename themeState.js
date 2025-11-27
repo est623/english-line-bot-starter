@@ -1,14 +1,8 @@
 // themeState.js
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-
-// 這三行是為了在 ES module 裡拿到目前資料夾位置
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// 記錄狀態的小本子（會放在專案根目錄）
-const STATE_PATH = path.join(__dirname, "state.json");
+// ✅ 不再使用 state.json，不需要 fs / path
+// ✅ 只根據日期字串 (YYYY-MM-DD) 來決定今天的主題
+// ✅ 同一天呼叫多次 → 一樣的主題
+// ✅ 換一天 → 自動輪到下一個主題（繞一圈再回來）
 
 // 你想要輪流的主題清單（可以自己改順序或新增）
 export const THEMES = [
@@ -24,41 +18,39 @@ export const THEMES = [
   "customer service",
 ];
 
+// 👇 起始日期：代表「這一天」會對應到 THEMES[0]（也就是 daily life）
+// 之後每過一天，就往下一個主題輪。
+// 你可以改成你想要的起算日（格式一定要是 YYYY-MM-DD）
+const START_DATE = "2025-11-01";
+
 /**
- * 給某一天決定主題：
- * - 同一天重複呼叫，會回傳同一個主題
- * - 換了一天，才會往後進一格
+ * 給某一天決定主題（純用日期計算，不用存檔）：
+ * - 同一天重複呼叫 → 一樣的主題
+ * - 換一天 → 根據「起始日到今天過了幾天」決定輪到哪一個主題
+ *
+ * @param {string} dateStr - 例如 "2025-11-27"（建議用你在 /today 裡的台灣日期）
+ * @returns {string} theme - 例如 "daily life" / "travel" ...
  */
 export function getThemeForDate(dateStr) {
-  let lastIndex = -1;
-  let lastDate = null;
+  // 把 YYYY-MM-DD 轉成 UTC 的整數時間，避免時區亂跑
+  const [y, m, d] = dateStr.split("-").map((n) => parseInt(n, 10));
+  const [sy, sm, sd] = START_DATE.split("-").map((n) => parseInt(n, 10));
 
-  if (fs.existsSync(STATE_PATH)) {
-    try {
-      const raw = fs.readFileSync(STATE_PATH, "utf8");
-      const state = JSON.parse(raw);
-      if (typeof state.lastIndex === "number") lastIndex = state.lastIndex;
-      if (typeof state.lastDate === "string") lastDate = state.lastDate;
-    } catch (e) {
-      console.warn("⚠ 讀取 state.json 失敗，從頭開始輪主題");
-    }
-  }
+  const dateUtc = Date.UTC(y, m - 1, d);
+  const startUtc = Date.UTC(sy, sm - 1, sd);
 
-  let index;
-  if (lastDate === dateStr && lastIndex >= 0) {
-    // 同一天 → 用上次的主題
-    index = lastIndex;
-  } else {
-    // 新的一天 → 主題往後跳一格
-    index = (lastIndex + 1 + THEMES.length) % THEMES.length;
-  }
+  const diffMs = dateUtc - startUtc;
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  // 允許 diffDays 為負數，所以這邊做一個安全的取模
+  const index =
+    ((diffDays % THEMES.length) + THEMES.length) % THEMES.length;
 
   const theme = THEMES[index];
 
-  // 更新小本子
-  const newState = { lastIndex: index, lastDate: dateStr };
-  fs.writeFileSync(STATE_PATH, JSON.stringify(newState), "utf8");
+  console.log(
+    `📚 getThemeForDate：${dateStr} → 使用主題「${theme}」（index=${index}, diffDays=${diffDays})`
+  );
 
-  console.log(`📚 getThemeForDate：${dateStr} → 使用主題「${theme}」（index=${index}）`);
   return theme;
 }
