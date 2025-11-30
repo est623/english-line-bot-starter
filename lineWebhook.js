@@ -117,6 +117,9 @@ async function handleEvent(event) {
   const userText = event.message.text.trim();
   console.log("👤 使用者輸入：", userText);
 
+    const userId = event.source.userId;  // 👈 新增這行
+
+
   // 1️⃣ 指令模式：/today
 if (userText === "/today") {
   const COUNT_PER_DAY = 5;
