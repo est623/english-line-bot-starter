@@ -196,35 +196,99 @@ if (userText === "/today") {
     });
   }
 }
+// 2️⃣ 指令模式：/quiz5 → 隨機考 5 題
+  if (userText === "/quiz5") {
+    try {
+      const vocabItems = await getAllVocab();
 
-if (userText === "/quiz5") {
-  const userId = event.source.userId;
+      if (!vocabItems || vocabItems.length < 5) {
+        return client.replyMessage(event.replyToken, {
+          type: "text",
+          text: "🥲 題庫不足 5 題，無法開始測驗",
+        });
+      }
 
-  const vocabItems = await getAllVocab(); // 我等下告訴你要放哪裡
+      const questions = buildQuizQuestions(vocabItems, 5);
 
-  if (!vocabItems || vocabItems.length < 5) {
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "🥲 題庫不足 5 題，無法開始測驗"
-    });
+      quizSessions.set(userId, {
+        questions,
+        current: 0,
+        correct: 0,
+      });
+
+      const firstMsg = buildQuizQuestionMessage(
+        questions[0],
+        0,
+        questions.length
+      );
+
+      return client.replyMessage(event.replyToken, firstMsg);
+    } catch (err) {
+      console.error("處理 /quiz5 發生錯誤：", err);
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "😵 產生測驗時發生錯誤，可以稍後再試一次。",
+      });
+    }
   }
 
-  const questions = buildQuizQuestions(vocabItems, 5);
 
-  quizSessions.set(userId, {
-    questions,
-    current: 0,
-    correct: 0
-  });
+  // 3️⃣ 測驗作答模式（一定要放在查單字之前！）
+  if (quizSessions.has(userId)) {
+    const session = quizSessions.get(userId);
+    const q = session.questions[session.current];
 
-  return sendQuizQuestion(
-    client,
-    event.replyToken,
-    questions[0],
-    0,
-    questions.length
-  );
-}
+    const ansIndex = ["A", "B", "C", "D"].indexOf(userText.toUpperCase());
+    if (ansIndex === -1) {
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "請用 A / B / C / D 作答喔！",
+      });
+    }
+
+    const chosen = q.options[ansIndex];
+
+    let feedback = "";
+    if (chosen === q.answer) {
+      session.correct++;
+      feedback = `✅ 答對了！${q.answer} = ${q.zh}`;
+    } else {
+      feedback = `❌ 答錯了！正確答案是：${q.answer}（${q.zh}）`;
+    }
+
+    session.current++;
+
+    // 已經作答完最後一題
+    if (session.current >= session.questions.length) {
+      quizSessions.delete(userId);
+
+      const summaryText = `🎉 測驗結束！
+
+共 5 題，你答對了 ${session.correct} 題
+正確率：${Math.round((session.correct / 5) * 100)}%
+
+輸入 /quiz5 再來一次吧！`;
+
+      return client.replyMessage(event.replyToken, [
+        { type: "text", text: feedback },
+        { type: "text", text: summaryText },
+      ]);
+    }
+
+    // 還有下一題：先回覆答題結果，再送出下一題
+    const nextQ = session.questions[session.current];
+    const nextMsg = buildQuizQuestionMessage(
+      nextQ,
+      session.current,
+      session.questions.length
+    );
+
+    return client.replyMessage(event.replyToken, [
+      { type: "text", text: feedback },
+      nextMsg,
+    ]);
+  }
+
 
 
  // 2️⃣ 查單字模式：單一英文單字
@@ -256,56 +320,6 @@ if (isSingleEnglishWord(userText)) {
   }
 }
 
-
-// 如果使用者正在測驗中（作答模式）
-const userId = event.source.userId;
-if (quizSessions.has(userId)) {
-  const session = quizSessions.get(userId);
-  const q = session.questions[session.current];
-
-  const ansIndex = ["A","B","C","D"].indexOf(userText.toUpperCase());
-  if (ansIndex === -1) {
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "請用 A / B / C / D 作答喔！"
-    });
-  }
-
-  const chosen = q.options[ansIndex];
-
-  let feedback = "";
-  if (chosen === q.answer) {
-    session.correct++;
-    feedback = `✅ 答對了！${q.answer} = ${q.zh}`;
-  } else {
-    feedback = `❌ 答錯了！正確答案是：${q.answer}`;
-  }
-
-  session.current++;
-
-  if (session.current >= session.questions.length) {
-    quizSessions.delete(userId);
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: 
-`🎉 測驗結束！
-
-共 5 題，你答對了 ${session.correct} 題
-正確率：${Math.round((session.correct/5)*100)}%
-
-輸入 /quiz5 再來一次吧！`
-    });
-  }
-
-  return sendQuizQuestion(
-    client,
-    event.replyToken,
-    session.questions[session.current],
-    session.current,
-    session.questions.length
-  );
-}
 
 
 
