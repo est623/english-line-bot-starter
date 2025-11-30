@@ -6,6 +6,73 @@ import { lookupWord } from "./dictionaryClient.js";
 import { generateVocab } from "./vocabGenerator.js";
 import { getTodayVocab, appendVocabRows, checkWordExists } from "./googleSheetClient.js";
 import { getThemeForDate } from "./themeState.js";
+import { getAllVocab } from "./googleSheetClient.js";
+
+// 儲存使用者的測驗狀態
+const quizSessions = new Map();
+// userId -> { questions: [...], current: 0, correct: 0 }
+
+function shuffle(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
+}
+
+function buildQuizQuestions(vocabItems, count = 5) {
+  const questions = [];
+
+  const shuffled = shuffle([...vocabItems]).slice(0, count);
+
+  for (const item of shuffled) {
+    const correct = item.word;
+
+    // 建選項（錯誤選項從其他單字抽）
+    let wrongPool = vocabItems.filter(v => v.word !== item.word);
+    wrongPool = shuffle(wrongPool).slice(3).map(v => v.word); // 3 個錯的
+
+    const options = shuffle([correct, ...wrongPool]).slice(0, 4);
+
+    questions.push({
+      zh: item.zh,
+      word: correct,
+      options,
+      answer: correct
+    });
+  }
+  return questions;
+}
+
+
+function sendQuizQuestion(client, replyToken, q, index, total) {
+  const text = 
+`第 ${index+1} 題 / 共 ${total} 題
+「${q.zh}」的正確英文是哪一個？
+
+A. ${q.options[0]}
+B. ${q.options[1]}
+C. ${q.options[2]}
+D. ${q.options[3]}
+`;
+
+  const quick = q.options.map((opt, i) => ({
+    type: "action",
+    action: {
+      type: "message",
+      label: String.fromCharCode(65 + i),
+      text: String.fromCharCode(65 + i)
+    }
+  }));
+
+  return client.replyMessage(replyToken, {
+    type: "text",
+    text,
+    quickReply: { items: quick }
+  });
+}
+
+
 
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -130,6 +197,36 @@ if (userText === "/today") {
   }
 }
 
+if (userText === "/quiz5") {
+  const userId = event.source.userId;
+
+  const vocabItems = await getAllVocab(); // 我等下告訴你要放哪裡
+
+  if (!vocabItems || vocabItems.length < 5) {
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "🥲 題庫不足 5 題，無法開始測驗"
+    });
+  }
+
+  const questions = buildQuizQuestions(vocabItems, 5);
+
+  quizSessions.set(userId, {
+    questions,
+    current: 0,
+    correct: 0
+  });
+
+  return sendQuizQuestion(
+    client,
+    event.replyToken,
+    questions[0],
+    0,
+    questions.length
+  );
+}
+
+
  // 2️⃣ 查單字模式：單一英文單字
 if (isSingleEnglishWord(userText)) {
   try {
@@ -157,6 +254,57 @@ if (isSingleEnglishWord(userText)) {
       text: "😵 查單字時發生錯誤，可以稍後再試一次。"
     });
   }
+}
+
+
+// 如果使用者正在測驗中（作答模式）
+const userId = event.source.userId;
+if (quizSessions.has(userId)) {
+  const session = quizSessions.get(userId);
+  const q = session.questions[session.current];
+
+  const ansIndex = ["A","B","C","D"].indexOf(userText.toUpperCase());
+  if (ansIndex === -1) {
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "請用 A / B / C / D 作答喔！"
+    });
+  }
+
+  const chosen = q.options[ansIndex];
+
+  let feedback = "";
+  if (chosen === q.answer) {
+    session.correct++;
+    feedback = `✅ 答對了！${q.answer} = ${q.zh}`;
+  } else {
+    feedback = `❌ 答錯了！正確答案是：${q.answer}`;
+  }
+
+  session.current++;
+
+  if (session.current >= session.questions.length) {
+    quizSessions.delete(userId);
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: 
+`🎉 測驗結束！
+
+共 5 題，你答對了 ${session.correct} 題
+正確率：${Math.round((session.correct/5)*100)}%
+
+輸入 /quiz5 再來一次吧！`
+    });
+  }
+
+  return sendQuizQuestion(
+    client,
+    event.replyToken,
+    session.questions[session.current],
+    session.current,
+    session.questions.length
+  );
 }
 
 

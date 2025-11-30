@@ -150,3 +150,48 @@ export async function checkWordExists(word) {
       row[0].trim().toLowerCase() === word.trim().toLowerCase()
   );
 }
+
+/**
+ * 🟦 讀取全部單字（給 /quiz5 用）
+ */
+export async function getAllVocab() {
+  const sheets = await getSheets();
+
+  const range = `${SHEET_NAME}!A2:I`;
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+
+  const rows = res.data.values || [];
+
+  return rows
+    .filter(row => row[1]) // 避免空白行
+    .map(row => {
+      const [
+        theme,
+        word,
+        pos,
+        zh,
+        example,
+        example_zh,
+        cefr,
+        source,
+        created_at,
+      ] = row;
+
+      return {
+        theme,
+        word,
+        pos,
+        zh,
+        example,
+        example_zh,
+        cefr,
+        source,
+        created_at,
+      };
+    });
+}
+
