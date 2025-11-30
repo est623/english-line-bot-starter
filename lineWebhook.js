@@ -4,9 +4,14 @@ import express from "express";
 import { middleware, Client } from "@line/bot-sdk";
 import { lookupWord } from "./dictionaryClient.js";
 import { generateVocab } from "./vocabGenerator.js";
-import { getTodayVocab, appendVocabRows, checkWordExists } from "./googleSheetClient.js";
+import {
+  getTodayVocab,
+  appendVocabRows,
+  checkWordExists,
+  getAllVocab,
+  appendWrongAnswers, // 👈 新增：錯題寫入
+} from "./googleSheetClient.js";
 import { getThemeForDate } from "./themeState.js";
-import { getAllVocab } from "./googleSheetClient.js";
 
 // 儲存使用者的測驗狀態
 const quizSessions = new Map();
@@ -25,7 +30,7 @@ function buildQuizQuestions(vocabItems, count = 5) {
   const questions = [];
 
   // 先濾掉沒有 word / zh 的怪資料
-  const pool = vocabItems.filter(v => v && v.word && v.zh);
+  const pool = vocabItems.filter((v) => v && v.word && v.zh);
 
   // 隨機抽出要考的題目
   const picked = shuffle([...pool]).slice(0, count);
@@ -37,8 +42,8 @@ function buildQuizQuestions(vocabItems, count = 5) {
     const wrongCandidates = Array.from(
       new Set(
         pool
-          .filter(v => v.word !== correct)   // 不能跟正解一樣
-          .map(v => v.word)
+          .filter((v) => v.word !== correct) // 不能跟正解一樣
+          .map((v) => v.word)
       )
     );
 
@@ -56,16 +61,15 @@ function buildQuizQuestions(vocabItems, count = 5) {
     }
 
     questions.push({
-      zh: item.zh,        // 題目顯示的中文
-      word: correct,      // 正確英文
-      options,            // 四個選項
-      answer: correct,    // 正解（用來判分）
+      zh: item.zh, // 題目顯示的中文
+      word: correct, // 正確英文
+      options, // 四個選項
+      answer: correct, // 正解（用來判分）
     });
   }
 
   return questions;
 }
-
 
 // 產生「題目」訊息物件（方便重複使用）
 function buildQuizQuestionMessage(q, index, total) {
@@ -93,9 +97,6 @@ D. ${q.options[3]}
     quickReply: { items: quick },
   };
 }
-
-
-
 
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -139,90 +140,88 @@ async function handleEvent(event) {
 
   const userText = event.message.text.trim();
   console.log("👤 使用者輸入：", userText);
-
-    const userId = event.source.userId;  // 👈 新增這行
-
+  const userId = event.source.userId; // 統一在這裡宣告
 
   // 1️⃣ 指令模式：/today
-if (userText === "/today") {
-  const COUNT_PER_DAY = 5;
+  if (userText === "/today") {
+    const COUNT_PER_DAY = 5;
 
-  try {
-    function getTodayTaipeiDateStr() {
-      const now = new Date();
-      const formatter = new Intl.DateTimeFormat("zh-TW", {
-        timeZone: "Asia/Taipei",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      });
-      const parts = formatter.formatToParts(now);
-      const y = parts.find(p => p.type === "year").value;
-      const m = parts.find(p => p.type === "month").value;
-      const d = parts.find(p => p.type === "day").value;
-      return `${y}-${m}-${d}`;
-    }
+    try {
+      function getTodayTaipeiDateStr() {
+        const now = new Date();
+        const formatter = new Intl.DateTimeFormat("zh-TW", {
+          timeZone: "Asia/Taipei",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        });
+        const parts = formatter.formatToParts(now);
+        const y = parts.find((p) => p.type === "year").value;
+        const m = parts.find((p) => p.type === "month").value;
+        const d = parts.find((p) => p.type === "day").value;
+        return `${y}-${m}-${d}`;
+      }
 
-    const todayStr = getTodayTaipeiDateStr(); // ★ 用台灣日期
+      const todayStr = getTodayTaipeiDateStr(); // ★ 用台灣日期
 
-    // 取得今日主題
-    const THEME = getThemeForDate(todayStr);
+      // 取得今日主題
+      const THEME = getThemeForDate(todayStr);
 
-    // 讀今天是否已有資料
-    const existing = await getTodayVocab({
-      theme: THEME,
-      dateStr: todayStr,
-      limit: COUNT_PER_DAY,
-    });
-
-    let items = [...existing];
-
-    if (items.length < COUNT_PER_DAY) {
-      const need = COUNT_PER_DAY - items.length;
-
-      const newItems = await generateVocab({
+      // 讀今天是否已有資料
+      const existing = await getTodayVocab({
         theme: THEME,
-        count: need,
-        bannedWords: items.map(i => i.word),
+        dateStr: todayStr,
+        limit: COUNT_PER_DAY,
       });
 
-      await appendVocabRows(newItems, { source: "today" });
+      let items = [...existing];
 
-      items = items.concat(newItems);
-    }
+      if (items.length < COUNT_PER_DAY) {
+        const need = COUNT_PER_DAY - items.length;
 
-    if (items.length === 0) {
+        const newItems = await generateVocab({
+          theme: THEME,
+          count: need,
+          bannedWords: items.map((i) => i.word),
+        });
+
+        await appendVocabRows(newItems, { source: "today" });
+
+        items = items.concat(newItems);
+      }
+
+      if (items.length === 0) {
+        return client.replyMessage(event.replyToken, {
+          type: "text",
+          text: "今天的單字好像還沒準備好，稍後再試一次看看 🥲",
+        });
+      }
+
+      const lines = [`📅 今日主題單字（${THEME}）：`];
+      for (const item of items) {
+        lines.push(
+          `\n🔹 ${item.word} (${item.pos || ""})`,
+          `中文：${item.zh || ""}`,
+          `例句：${item.example || item.example_en || ""}`,
+          `→ ${item.example_zh || ""}`
+        );
+      }
+
+      const replyText = lines.join("\n");
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: "今天的單字好像還沒準備好，稍後再試一次看看 🥲",
+        text: replyText.slice(0, 4900),
+      });
+    } catch (err) {
+      console.error("處理 /today 發生錯誤：", err);
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "😢 產生 /today 單字或讀取試算表時發生錯誤，可以稍後再試一次。",
       });
     }
-
-    const lines = [`📅 今日主題單字（${THEME}）：`];
-    for (const item of items) {
-      lines.push(
-        `\n🔹 ${item.word} (${item.pos || ""})`,
-        `中文：${item.zh || ""}`,
-        `例句：${item.example || item.example_en || ""}`,
-        `→ ${item.example_zh || ""}`
-      );
-    }
-
-    const replyText = lines.join("\n");
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: replyText.slice(0, 4900),
-    });
-
-  } catch (err) {
-    console.error("處理 /today 發生錯誤：", err);
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "😢 產生 /today 單字或讀取試算表時發生錯誤，可以稍後再試一次。",
-    });
   }
-}
-// 2️⃣ 指令模式：/quiz5 → 隨機考 5 題
+
+  // 2️⃣ 指令模式：/quiz5 → 隨機考 5 題
   if (userText === "/quiz5") {
     try {
       const vocabItems = await getAllVocab();
@@ -258,7 +257,6 @@ if (userText === "/today") {
     }
   }
 
-
   // 3️⃣ 測驗作答模式（一定要放在查單字之前！）
   if (quizSessions.has(userId)) {
     const session = quizSessions.get(userId);
@@ -280,6 +278,24 @@ if (userText === "/today") {
       feedback = `✅ 答對了！${q.answer} = ${q.zh}`;
     } else {
       feedback = `❌ 答錯了！正確答案是：${q.answer}（${q.zh}）`;
+
+      // 📝 新增：錯題寫進 WrongAnswers
+      try {
+        await appendWrongAnswers([
+          {
+            userId,
+            word: q.word,
+            zh: q.zh,
+            chosen, // 使用者選到的錯誤答案
+            is_correct: false,
+            question_zh: q.zh,
+            options: q.options,
+            quiz_type: "/quiz5",
+          },
+        ]);
+      } catch (err) {
+        console.error("寫入錯題紀錄錯誤：", err);
+      }
     }
 
     session.current++;
@@ -315,50 +331,46 @@ if (userText === "/today") {
     ]);
   }
 
+  // 4️⃣ 查單字模式：單一英文單字
+  if (isSingleEnglishWord(userText)) {
+    try {
+      const { lineText, item } = await lookupWord(userText.toLowerCase());
 
+      if (item) {
+        const exists = await checkWordExists(item.word);
 
- // 2️⃣ 查單字模式：單一英文單字
-if (isSingleEnglishWord(userText)) {
-  try {
-    const { lineText, item } = await lookupWord(userText.toLowerCase());
-
-    if (item) {
-      const exists = await checkWordExists(item.word);
-
-      if (!exists) {
-        console.log(`📌 新單字：寫入試算表 → ${item.word}`);
-        await appendVocabRows([item], { source: "lookup" });
-      } else {
-        console.log(`⚠ 已存在：不寫入 → ${item.word}`);
+        if (!exists) {
+          console.log(`📌 新單字：寫入試算表 → ${item.word}`);
+          await appendVocabRows([item], { source: "lookup" });
+        } else {
+          console.log(`⚠ 已存在：不寫入 → ${item.word}`);
+        }
       }
+
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: lineText.slice(0, 4900),
+      });
+    } catch (err) {
+      console.error("查單字時發生錯誤：", err);
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "😵 查單字時發生錯誤，可以稍後再試一次。",
+      });
     }
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: lineText.slice(0, 4900)
-    });
-  } catch (err) {
-    console.error("查單字時發生錯誤：", err);
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "😵 查單字時發生錯誤，可以稍後再試一次。"
-    });
   }
-}
 
-
-
-
-  // 3️⃣ 其他訊息：簡單提示
+  // 5️⃣ 其他訊息：簡單提示
   const helpText =
-    '嗨，我是你的英文單字小幫手 👋\n\n' +
-    '你可以這樣跟我互動：\n' +
-    '• 輸入 /today　→ 給你 5 個今日主題單字（會記錄在試算表）\n' +
-    '• 輸入一個英文單字（例如：abandon）→ 查意思＋同義字＋例句\n';
+    "嗨，我是你的英文單字小幫手 👋\n\n" +
+    "你可以這樣跟我互動：\n" +
+    "• 輸入 /today　→ 給你 5 個今日主題單字（會記錄在試算表）\n" +
+    "• 輸入 /quiz5 → 隨機考你 5 題單字小測驗\n" +
+    "• 輸入一個英文單字（例如：abandon）→ 查意思＋同義字＋例句\n";
 
   return client.replyMessage(event.replyToken, {
     type: "text",
-    text: helpText
+    text: helpText,
   });
 }
 

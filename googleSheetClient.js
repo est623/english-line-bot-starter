@@ -2,8 +2,11 @@
 import "dotenv/config";
 import { google } from "googleapis";
 
+
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = "Vocabulary"; // 你的工作表名稱
+const WRONG_SHEET_NAME = "WrongAnswers"; // 👈 新增這行
+
 
 if (!SPREADSHEET_ID) {
   console.error("❌ 缺少 GOOGLE_SHEET_ID，請在 .env / Render 環境變數設定");
@@ -150,6 +153,39 @@ export async function checkWordExists(word) {
       row[0].trim().toLowerCase() === word.trim().toLowerCase()
   );
 }
+
+/**
+ * 🟦 寫入錯題紀錄到 WrongAnswers 分頁
+ */
+export async function appendWrongAnswers(items) {
+  const sheets = await getSheets();
+
+  const nowIso = new Date().toISOString();
+
+  const values = items.map((item) => [
+    item.userId || "",
+    item.word || "",
+    item.zh || "",
+    item.chosen || "",
+    item.is_correct === true ? "TRUE" : "FALSE",
+    item.question_zh || "",
+    (item.options && item.options.join(" | ")) || "",
+    item.quiz_type || "",
+    item.created_at || nowIso,
+  ]);
+
+  const range = `${WRONG_SHEET_NAME}!A2:I`;
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+    valueInputOption: "RAW",
+    requestBody: { values },
+  });
+
+  console.log(`✅ 已寫入錯題 ${values.length} 筆到 WrongAnswers`);
+}
+
 
 /**
  * 🟦 讀取全部單字（給 /quiz5 用）
