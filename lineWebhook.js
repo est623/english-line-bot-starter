@@ -20,29 +20,52 @@ function shuffle(array) {
   return array;
 }
 
+// 建立測驗題目（看中文選英文）
 function buildQuizQuestions(vocabItems, count = 5) {
   const questions = [];
 
-  const shuffled = shuffle([...vocabItems]).slice(0, count);
+  // 先濾掉沒有 word / zh 的怪資料
+  const pool = vocabItems.filter(v => v && v.word && v.zh);
 
-  for (const item of shuffled) {
+  // 隨機抽出要考的題目
+  const picked = shuffle([...pool]).slice(0, count);
+
+  for (const item of picked) {
     const correct = item.word;
 
-    // 建選項（錯誤選項從其他單字抽）
-    let wrongPool = vocabItems.filter(v => v.word !== item.word);
-    wrongPool = shuffle(wrongPool).slice(3).map(v => v.word); // 3 個錯的
+    // 先做一份「去重的候選錯誤答案清單」
+    const wrongCandidates = Array.from(
+      new Set(
+        pool
+          .filter(v => v.word !== correct)   // 不能跟正解一樣
+          .map(v => v.word)
+      )
+    );
 
-    const options = shuffle([correct, ...wrongPool]).slice(0, 4);
+    // 抽 3 個錯的
+    const wrongWords = shuffle(wrongCandidates).slice(0, 3);
+
+    // 正解 + 錯誤選項
+    let options = [correct, ...wrongWords];
+    options = shuffle(options);
+
+    // 保險機制：如果某種怪狀況導致 options 裡沒有正解，就強制塞回去
+    if (!options.includes(correct)) {
+      options[0] = correct;
+      options = shuffle(options);
+    }
 
     questions.push({
-      zh: item.zh,
-      word: correct,
-      options,
-      answer: correct
+      zh: item.zh,        // 題目顯示的中文
+      word: correct,      // 正確英文
+      options,            // 四個選項
+      answer: correct,    // 正解（用來判分）
     });
   }
+
   return questions;
 }
+
 
 // 產生「題目」訊息物件（方便重複使用）
 function buildQuizQuestionMessage(q, index, total) {
