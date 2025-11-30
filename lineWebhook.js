@@ -44,10 +44,9 @@ function buildQuizQuestions(vocabItems, count = 5) {
   return questions;
 }
 
-
-function sendQuizQuestion(client, replyToken, q, index, total) {
-  const text = 
-`第 ${index+1} 題 / 共 ${total} 題
+// 產生「題目」訊息物件（方便重複使用）
+function buildQuizQuestionMessage(q, index, total) {
+  const text = `第 ${index + 1} 題 / 共 ${total} 題
 「${q.zh}」的正確英文是哪一個？
 
 A. ${q.options[0]}
@@ -60,17 +59,18 @@ D. ${q.options[3]}
     type: "action",
     action: {
       type: "message",
-      label: String.fromCharCode(65 + i),
-      text: String.fromCharCode(65 + i)
-    }
+      label: String.fromCharCode(65 + i), // A/B/C/D
+      text: String.fromCharCode(65 + i),
+    },
   }));
 
-  return client.replyMessage(replyToken, {
+  return {
     type: "text",
     text,
-    quickReply: { items: quick }
-  });
+    quickReply: { items: quick },
+  };
 }
+
 
 
 
