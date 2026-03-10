@@ -8,6 +8,7 @@ import {
   getTodayVocab,
   appendVocabRows,
   checkWordExists,
+  findVocabByWord,
   getAllVocab,
   appendWrongAnswers, // 👈 新增：錯題寫入
 } from "./googleSheetClient.js";
@@ -334,7 +335,29 @@ async function handleEvent(event) {
   // 4️⃣ 查單字模式：單一英文單字
   if (isSingleEnglishWord(userText)) {
     try {
-      const { lineText, item } = await lookupWord(userText.toLowerCase());
+      const inputWord = userText.toLowerCase();
+      const fromSheet = await findVocabByWord(inputWord);
+
+      if (fromSheet) {
+        const cachedLines = [
+          "source: sheet",
+          `Word: ${fromSheet.word}`,
+          fromSheet.pos ? `POS: ${fromSheet.pos}` : "POS: ",
+          fromSheet.zh ? `ZH: ${fromSheet.zh}` : "ZH: ",
+          fromSheet.cefr ? `CEFR: ${fromSheet.cefr}` : "CEFR: ",
+          "",
+          "Example:",
+          fromSheet.example ? `- ${fromSheet.example}` : "- (no example)",
+          fromSheet.example_zh ? `- ${fromSheet.example_zh}` : "- (no zh example)",
+        ];
+
+        return client.replyMessage(event.replyToken, {
+          type: "text",
+          text: cachedLines.join("\n").slice(0, 4900),
+        });
+      }
+
+      const { lineText, item } = await lookupWord(inputWord);
 
       if (item) {
         const exists = await checkWordExists(item.word);
@@ -349,7 +372,7 @@ async function handleEvent(event) {
 
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: lineText.slice(0, 4900),
+        text: (lineText + "\n\nsource: gemini").slice(0, 4900),
       });
     } catch (err) {
       console.error("查單字時發生錯誤：", err);

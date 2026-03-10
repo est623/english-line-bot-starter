@@ -157,6 +157,45 @@ export async function checkWordExists(word) {
 /**
  * 🟦 寫入錯題紀錄到 WrongAnswers 分頁
  */
+/**
+ * Find first vocabulary row by word (case-insensitive).
+ */
+export async function findVocabByWord(word) {
+  const sheets = await getSheets();
+
+  const target = (word || "").trim().toLowerCase();
+  if (!target) return null;
+
+  const range = `${SHEET_NAME}!A2:I`;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+
+  const rows = res.data.values || [];
+
+  for (const row of rows) {
+    const [theme, rowWord, pos, zh, example, example_zh, cefr, source, created_at] = row;
+    if (!rowWord) continue;
+
+    if (String(rowWord).trim().toLowerCase() === target) {
+      return {
+        theme: theme || "",
+        word: rowWord || "",
+        pos: pos || "",
+        zh: zh || "",
+        example: example || "",
+        example_zh: example_zh || "",
+        cefr: cefr || "",
+        source: source || "",
+        created_at: created_at || "",
+      };
+    }
+  }
+
+  return null;
+}
+
 export async function appendWrongAnswers(items) {
   const sheets = await getSheets();
 
