@@ -389,6 +389,28 @@ app.post("/webhook", middleware(config), async (req, res) => {
 });
 
 // 判斷是不是「單一英文單字」
+app.post("/jobs/daily-push", async (req, res) => {
+  try {
+    const providedToken = req.headers["x-job-token"];
+    const expectedToken = process.env.DAILY_PUSH_JOB_TOKEN;
+
+    if (!expectedToken || providedToken !== expectedToken) {
+      console.warn("[daily-push] manual trigger unauthorized");
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    const dateStr = getTodayTaipeiDateStr();
+    await runDailyPushForToday(dateStr);
+
+    return res.status(200).json({ ok: true, dateStr });
+  } catch (err) {
+    console.error("[daily-push] manual trigger failed:", err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || String(err),
+    });
+  }
+});
 function isSingleEnglishWord(text) {
   return /^[A-Za-z\-]+$/.test(text.trim());
 }
