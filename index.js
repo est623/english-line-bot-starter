@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { generateVocab } from "./vocabGenerator.js";
-import { appendVocabRows } from "./googleSheetClient.js";
+import { appendVocabRows, getRecentSentWords } from "./googleSheetClient.js";
 
 // 讓 __dirname 在 ES module 可以用
 const __filename = fileURLToPath(import.meta.url);
@@ -45,6 +45,24 @@ function getNextTheme() {
   return theme;
 }
 
+
+function normalizeWordKey(word) {
+  return String(word || "").trim().toLowerCase();
+}
+
+function pickFreshVocabItems(candidates, usedWords, limit) {
+  const picked = [];
+  for (const item of candidates || []) {
+    const key = normalizeWordKey(item && item.word);
+    if (!key) continue;
+    if (usedWords.has(key)) continue;
+
+    usedWords.add(key);
+    picked.push(item);
+    if (picked.length >= limit) break;
+  }
+  return picked;
+}
 async function main() {
   try {
     if (!process.env.GEMINI_API_KEY) {
@@ -55,14 +73,42 @@ async function main() {
     const theme = getNextTheme();
     console.log(`📘 這次主題：${theme}（${COUNT_PER_THEME} 個字）`);
 
-    const items = await generateVocab({
-      theme,
-      count: COUNT_PER_THEME,
-      bannedWords: []
-    });
+        const LOOKBACK_DAYS = 30;
+    const MAX_RETRY_ROUNDS = 5;
 
-    // 寫入 Google Sheet
-    await appendVocabRows(items);
+    const recentWords = await getRecentSentWords({
+      days: LOOKBACK_DAYS,
+      source: "today",
+    });
+    const usedWords = new Set(recentWords.map(normalizeWordKey).filter(Boolean));
+
+    const items = [];
+    let retryRound = 0;
+
+    while (items.length < COUNT_PER_THEME && retryRound < MAX_RETRY_ROUNDS) {
+      retryRound++;
+
+      const need = COUNT_PER_THEME - items.length;
+      const requestCount = Math.max(need * 2, need);
+
+      const generated = await generateVocab({
+        theme,
+        count: requestCount,
+        bannedWords: Array.from(usedWords),
+      });
+
+      const freshItems = pickFreshVocabItems(generated, usedWords, need);
+      if (freshItems.length === 0) continue;
+
+      items.push(...freshItems);
+    }
+
+    if (items.length === 0) {
+      throw new Error("No fresh vocab generated after retry rounds");
+    }
+
+    // ??? Google Sheet
+    await appendVocabRows(items, { source: "today" });
 
     console.log(`🌟 已寫入 Google Sheet：${items.length} 筆單字（主題：${theme}）`);
     console.log("✔ 本次結束，可以下次再跑增加下一個主題");

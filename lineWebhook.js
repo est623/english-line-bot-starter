@@ -6,6 +6,7 @@ import { lookupWord } from "./dictionaryClient.js";
 import { generateVocab } from "./vocabGenerator.js";
 import {
   getTodayVocab,
+  getRecentSentWords,
   appendVocabRows,
   checkWordExists,
   findVocabByWord,
@@ -134,6 +135,30 @@ function isSingleEnglishWord(text) {
   return /^[A-Za-z\-]+$/.test(text.trim());
 }
 
+
+function normalizeWordKey(word) {
+  return String(word || "").trim().toLowerCase();
+}
+
+/**
+ * Filter out words already used; compare by normalized word only (ignore POS).
+ */
+function pickFreshVocabItems(candidates, usedWords, limit) {
+  const picked = [];
+
+  for (const item of candidates || []) {
+    const key = normalizeWordKey(item && item.word);
+    if (!key) continue;
+    if (usedWords.has(key)) continue;
+
+    usedWords.add(key);
+    picked.push(item);
+    if (picked.length >= limit) break;
+  }
+
+  return picked;
+}
+
 async function handleEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") {
     return Promise.resolve(null);
@@ -145,7 +170,9 @@ async function handleEvent(event) {
 
   // 1️⃣ 指令模式：/today
   if (userText === "/today") {
-    const COUNT_PER_DAY = 5;
+    const COUNT_PER_DAY = 10;
+    const LOOKBACK_DAYS = 30;
+    const MAX_RETRY_ROUNDS = 5;
 
     try {
       function getTodayTaipeiDateStr() {
@@ -177,18 +204,47 @@ async function handleEvent(event) {
 
       let items = [...existing];
 
-      if (items.length < COUNT_PER_DAY) {
-        const need = COUNT_PER_DAY - items.length;
+      // Build used-word set from recent 30-day sent words + already-generated today words.
+      const recentWords = await getRecentSentWords({
+        days: LOOKBACK_DAYS,
+        source: "today",
+      });
+      const usedWords = new Set(
+        recentWords.map(normalizeWordKey).filter(Boolean)
+      );
 
-        const newItems = await generateVocab({
+      for (const item of items) {
+        const key = normalizeWordKey(item && item.word);
+        if (key) usedWords.add(key);
+      }
+
+      let retryRound = 0;
+      while (items.length < COUNT_PER_DAY && retryRound < MAX_RETRY_ROUNDS) {
+        retryRound++;
+
+        const need = COUNT_PER_DAY - items.length;
+        const requestCount = Math.max(need * 2, need);
+
+        const generated = await generateVocab({
           theme: THEME,
-          count: need,
-          bannedWords: items.map((i) => i.word),
+          count: requestCount,
+          bannedWords: Array.from(usedWords),
         });
 
-        await appendVocabRows(newItems, { source: "today" });
+        const freshItems = pickFreshVocabItems(generated, usedWords, need);
+        if (freshItems.length === 0) continue;
 
-        items = items.concat(newItems);
+        await appendVocabRows(freshItems, { source: "today" });
+        items = items.concat(freshItems);
+      }
+
+      if (items.length < COUNT_PER_DAY) {
+        console.warn(
+          "today vocab not full after retries: got " +
+            items.length +
+            "/" +
+            COUNT_PER_DAY
+        );
       }
 
       if (items.length === 0) {

@@ -196,6 +196,39 @@ export async function findVocabByWord(word) {
   return null;
 }
 
+/**
+ * Get sent words within recent N days (case-insensitive compare will be handled by caller).
+ */
+export async function getRecentSentWords({ days = 30, source = "today" } = {}) {
+  const sheets = await getSheets();
+
+  const range = `${SHEET_NAME}!A2:I`;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+
+  const rows = res.data.values || [];
+  const now = Date.now();
+  const msInDay = 24 * 60 * 60 * 1000;
+  const cutoff = now - days * msInDay;
+
+  const words = [];
+
+  for (const row of rows) {
+    const [, word, , , , , , rowSource, created_at] = row;
+    if (!word || !created_at) continue;
+    if (source && rowSource !== source) continue;
+
+    const ts = Date.parse(created_at);
+    if (!Number.isFinite(ts)) continue;
+    if (ts < cutoff || ts > now) continue;
+
+    words.push(word);
+  }
+
+  return words;
+}
 export async function appendWrongAnswers(items) {
   const sheets = await getSheets();
 
