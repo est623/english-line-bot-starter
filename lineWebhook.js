@@ -1,6 +1,9 @@
 // lineWebhook.js
 import "dotenv/config";
 import express from "express";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { middleware, Client } from "@line/bot-sdk";
 import { lookupWord } from "./dictionaryClient.js";
 import { generateVocab } from "./vocabGenerator.js";
@@ -100,6 +103,261 @@ D. ${q.options[3]}
   };
 }
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SUBSCRIBERS_PATH = path.join(__dirname, "subscribers.json");
+const DAILY_PUSH_STATE_PATH = path.join(__dirname, "dailyPushState.json");
+const TAIPEI_TIMEZONE = "Asia/Taipei";
+const DAILY_PUSH_HOUR = 7;
+const DAILY_PUSH_MINUTE = 0;
+const DAILY_WORD_COUNT = 10;
+const LOOKBACK_DAYS = 30;
+const MAX_RETRY_ROUNDS = 5;
+
+function readJsonFile(filePath, fallbackValue) {
+  try {
+    if (!fs.existsSync(filePath)) return fallbackValue;
+    const raw = fs.readFileSync(filePath, "utf8").trim();
+    if (!raw) return fallbackValue;
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error("[state] Failed to read JSON:", filePath, err);
+    return fallbackValue;
+  }
+}
+
+function writeJsonFile(filePath, data) {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+  } catch (err) {
+    console.error("[state] Failed to write JSON:", filePath, err);
+  }
+}
+
+function getTaipeiNowParts(now = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TAIPEI_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(now);
+  const year = parts.find((p) => p.type === "year")?.value || "0000";
+  const month = parts.find((p) => p.type === "month")?.value || "01";
+  const day = parts.find((p) => p.type === "day")?.value || "01";
+  const hour = Number(parts.find((p) => p.type === "hour")?.value || "0");
+  const minute = Number(parts.find((p) => p.type === "minute")?.value || "0");
+
+  return {
+    dateStr: `${year}-${month}-${day}`,
+    hour,
+    minute,
+  };
+}
+
+function getTodayTaipeiDateStr() {
+  return getTaipeiNowParts().dateStr;
+}
+
+function getSubscribers() {
+  const users = readJsonFile(SUBSCRIBERS_PATH, []);
+  return Array.isArray(users) ? users : [];
+}
+
+function registerSubscriber(userId) {
+  if (!userId) return;
+  const users = getSubscribers();
+  if (users.includes(userId)) return;
+  users.push(userId);
+  writeJsonFile(SUBSCRIBERS_PATH, users);
+  console.log(`[subscriber] Registered userId: ${userId}`);
+}
+
+function getDailyPushState() {
+  const state = readJsonFile(DAILY_PUSH_STATE_PATH, {
+    lastRunDate: "",
+    sentByDate: {},
+  });
+
+  if (!state || typeof state !== "object") {
+    return { lastRunDate: "", sentByDate: {} };
+  }
+  if (!state.sentByDate || typeof state.sentByDate !== "object") {
+    state.sentByDate = {};
+  }
+  if (typeof state.lastRunDate !== "string") {
+    state.lastRunDate = "";
+  }
+  return state;
+}
+
+function saveDailyPushState(state) {
+  writeJsonFile(DAILY_PUSH_STATE_PATH, state);
+}
+
+function normalizeWordKey(word) {
+  return String(word || "").trim().toLowerCase();
+}
+
+function pickFreshVocabItems(candidates, usedWords, limit) {
+  const picked = [];
+  for (const item of candidates || []) {
+    const key = normalizeWordKey(item && item.word);
+    if (!key) continue;
+    if (usedWords.has(key)) continue;
+
+    usedWords.add(key);
+    picked.push(item);
+    if (picked.length >= limit) break;
+  }
+  return picked;
+}
+function markUserPushAttempt(state, dateStr, userId, status, errorMessage = "") {
+  if (!state.sentByDate[dateStr]) state.sentByDate[dateStr] = {};
+  state.sentByDate[dateStr][userId] = {
+    status,
+    at: new Date().toISOString(),
+    error: errorMessage || "",
+  };
+}
+
+async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
+  const todayStr = dateStr || getTodayTaipeiDateStr();
+  const theme = getThemeForDate(todayStr);
+
+  const existing = await getTodayVocab({
+    theme,
+    dateStr: todayStr,
+    limit: count,
+  });
+
+  let items = [...existing];
+  const recentWords = await getRecentSentWords({
+    days: LOOKBACK_DAYS,
+    source: "today",
+  });
+  const usedWords = new Set(recentWords.map(normalizeWordKey).filter(Boolean));
+
+  for (const item of items) {
+    const key = normalizeWordKey(item && item.word);
+    if (key) usedWords.add(key);
+  }
+
+  let retryRound = 0;
+  while (items.length < count && retryRound < MAX_RETRY_ROUNDS) {
+    retryRound++;
+
+    const need = count - items.length;
+    const requestCount = Math.max(need * 2, need);
+
+    const generated = await generateVocab({
+      theme,
+      count: requestCount,
+      bannedWords: Array.from(usedWords),
+    });
+
+    const freshItems = pickFreshVocabItems(generated, usedWords, need);
+    if (freshItems.length === 0) continue;
+
+    await appendVocabRows(freshItems, { source: "today" });
+    items = items.concat(freshItems);
+  }
+
+  if (items.length < count) {
+    console.warn(
+      `[today] vocab not full after retries: got ${items.length}/${count}`
+    );
+  }
+
+  return { dateStr: todayStr, theme, items };
+}
+
+function buildTodayVocabText(theme, items) {
+  const lines = [`Today vocab (${theme})`];
+  for (const item of items) {
+    lines.push(
+      `\n- ${item.word} (${item.pos || ""})`,
+      `ZH: ${item.zh || ""}`,
+      `Example: ${item.example || item.example_en || ""}`,
+      `${item.example_zh || ""}`
+    );
+  }
+  return lines.join("\n");
+}
+
+async function runDailyPushForToday(dateStr) {
+  const state = getDailyPushState();
+  const subscribers = getSubscribers();
+  console.log(`[daily-push] start date=${dateStr}, subscribers=${subscribers.length}`);
+
+  if (subscribers.length === 0) {
+    console.log("[daily-push] no subscribers, skip");
+    return;
+  }
+
+  const { theme, items } = await getOrCreateTodayVocab({
+    dateStr,
+    count: DAILY_WORD_COUNT,
+  });
+
+  if (!items || items.length === 0) {
+    console.log("[daily-push] no vocab available, skip push");
+    return;
+  }
+
+  const text = buildTodayVocabText(theme, items).slice(0, 4900);
+  for (const userId of subscribers) {
+    if (state.sentByDate?.[dateStr]?.[userId]) {
+      console.log(`[daily-push] skip already attempted user=${userId} date=${dateStr}`);
+      continue;
+    }
+
+    try {
+      await client.pushMessage(userId, { type: "text", text });
+      markUserPushAttempt(state, dateStr, userId, "success");
+      console.log(`[daily-push] success user=${userId} date=${dateStr}`);
+    } catch (err) {
+      const msg = err?.message || String(err);
+      markUserPushAttempt(state, dateStr, userId, "failed", msg);
+      console.error(`[daily-push] failed user=${userId} date=${dateStr}: ${msg}`);
+    }
+  }
+
+  saveDailyPushState(state);
+}
+
+async function tryRunDailyPushSchedulerTick() {
+  const now = getTaipeiNowParts();
+  if (now.hour !== DAILY_PUSH_HOUR || now.minute !== DAILY_PUSH_MINUTE) return;
+
+  const state = getDailyPushState();
+  if (state.lastRunDate === now.dateStr) return;
+
+  state.lastRunDate = now.dateStr;
+  saveDailyPushState(state);
+
+  try {
+    await runDailyPushForToday(now.dateStr);
+  } catch (err) {
+    console.error("[daily-push] unexpected error:", err);
+  }
+}
+
+function startDailyPushScheduler() {
+  console.log(
+    `[daily-push] scheduler started at ${DAILY_PUSH_HOUR.toString().padStart(2, "0")}:${DAILY_PUSH_MINUTE.toString().padStart(2, "0")} (${TAIPEI_TIMEZONE})`
+  );
+
+  void tryRunDailyPushSchedulerTick();
+  setInterval(() => {
+    void tryRunDailyPushSchedulerTick();
+  }, 30 * 1000);
+}
+
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
@@ -136,29 +394,6 @@ function isSingleEnglishWord(text) {
 }
 
 
-function normalizeWordKey(word) {
-  return String(word || "").trim().toLowerCase();
-}
-
-/**
- * Filter out words already used; compare by normalized word only (ignore POS).
- */
-function pickFreshVocabItems(candidates, usedWords, limit) {
-  const picked = [];
-
-  for (const item of candidates || []) {
-    const key = normalizeWordKey(item && item.word);
-    if (!key) continue;
-    if (usedWords.has(key)) continue;
-
-    usedWords.add(key);
-    picked.push(item);
-    if (picked.length >= limit) break;
-  }
-
-  return picked;
-}
-
 async function handleEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") {
     return Promise.resolve(null);
@@ -167,113 +402,31 @@ async function handleEvent(event) {
   const userText = event.message.text.trim();
   console.log("👤 使用者輸入：", userText);
   const userId = event.source.userId; // 統一在這裡宣告
+  registerSubscriber(userId);
 
   // 1️⃣ 指令模式：/today
   if (userText === "/today") {
-    const COUNT_PER_DAY = 10;
-    const LOOKBACK_DAYS = 30;
-    const MAX_RETRY_ROUNDS = 5;
-
     try {
-      function getTodayTaipeiDateStr() {
-        const now = new Date();
-        const formatter = new Intl.DateTimeFormat("zh-TW", {
-          timeZone: "Asia/Taipei",
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-        });
-        const parts = formatter.formatToParts(now);
-        const y = parts.find((p) => p.type === "year").value;
-        const m = parts.find((p) => p.type === "month").value;
-        const d = parts.find((p) => p.type === "day").value;
-        return `${y}-${m}-${d}`;
-      }
-
-      const todayStr = getTodayTaipeiDateStr(); // ★ 用台灣日期
-
-      // 取得今日主題
-      const THEME = getThemeForDate(todayStr);
-
-      // 讀今天是否已有資料
-      const existing = await getTodayVocab({
-        theme: THEME,
-        dateStr: todayStr,
-        limit: COUNT_PER_DAY,
+      const { theme, items } = await getOrCreateTodayVocab({
+        count: DAILY_WORD_COUNT,
       });
 
-      let items = [...existing];
-
-      // Build used-word set from recent 30-day sent words + already-generated today words.
-      const recentWords = await getRecentSentWords({
-        days: LOOKBACK_DAYS,
-        source: "today",
-      });
-      const usedWords = new Set(
-        recentWords.map(normalizeWordKey).filter(Boolean)
-      );
-
-      for (const item of items) {
-        const key = normalizeWordKey(item && item.word);
-        if (key) usedWords.add(key);
-      }
-
-      let retryRound = 0;
-      while (items.length < COUNT_PER_DAY && retryRound < MAX_RETRY_ROUNDS) {
-        retryRound++;
-
-        const need = COUNT_PER_DAY - items.length;
-        const requestCount = Math.max(need * 2, need);
-
-        const generated = await generateVocab({
-          theme: THEME,
-          count: requestCount,
-          bannedWords: Array.from(usedWords),
-        });
-
-        const freshItems = pickFreshVocabItems(generated, usedWords, need);
-        if (freshItems.length === 0) continue;
-
-        await appendVocabRows(freshItems, { source: "today" });
-        items = items.concat(freshItems);
-      }
-
-      if (items.length < COUNT_PER_DAY) {
-        console.warn(
-          "today vocab not full after retries: got " +
-            items.length +
-            "/" +
-            COUNT_PER_DAY
-        );
-      }
-
-      if (items.length === 0) {
+      if (!items || items.length === 0) {
         return client.replyMessage(event.replyToken, {
           type: "text",
-          text: "今天的單字好像還沒準備好，稍後再試一次看看 🥲",
+          text: "Today vocab is not ready yet. Please try again later.",
         });
       }
 
-      const lines = [`📅 今日主題單字（${THEME}）：`];
-      for (const item of items) {
-        lines.push(
-          `\n🔹 ${item.word} (${item.pos || ""})`,
-          `中文：${item.zh || ""}`,
-          `例句：${item.example || item.example_en || ""}`,
-          `→ ${item.example_zh || ""}`
-        );
-      }
-
-      const replyText = lines.join("\n");
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: replyText.slice(0, 4900),
+        text: buildTodayVocabText(theme, items).slice(0, 4900),
       });
     } catch (err) {
-      console.error("處理 /today 發生錯誤：", err);
+      console.error("Error on /today:", err);
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: "😢 產生 /today 單字或讀取試算表時發生錯誤，可以稍後再試一次。",
+        text: "Failed to build today vocab. Please try again later.",
       });
     }
   }
@@ -457,4 +610,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 LINE webhook server is running on port ${PORT}`);
   console.log(`   現在在本機 http://localhost:${PORT}/ ，一律用 POST /webhook 接 LINE`);
+  startDailyPushScheduler();
 });
