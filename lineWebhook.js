@@ -15,6 +15,8 @@ import {
   findVocabByWord,
   getAllVocab,
   appendWrongAnswers, // 👈 新增：錯題寫入
+  getPushSubscribers,
+  upsertPushSubscriber,
 } from "./googleSheetClient.js";
 import { getThemeForDate } from "./themeState.js";
 
@@ -105,7 +107,6 @@ D. ${q.options[3]}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const SUBSCRIBERS_PATH = path.join(__dirname, "subscribers.json");
 const DAILY_PUSH_STATE_PATH = path.join(__dirname, "dailyPushState.json");
 const TAIPEI_TIMEZONE = "Asia/Taipei";
 const DAILY_PUSH_HOUR = 7;
@@ -163,18 +164,15 @@ function getTodayTaipeiDateStr() {
   return getTaipeiNowParts().dateStr;
 }
 
-function getSubscribers() {
-  const users = readJsonFile(SUBSCRIBERS_PATH, []);
-  return Array.isArray(users) ? users : [];
+async function getSubscribers() {
+  return await getPushSubscribers();
 }
 
-function registerSubscriber(userId) {
-  if (!userId) return;
-  const users = getSubscribers();
-  if (users.includes(userId)) return;
-  users.push(userId);
-  writeJsonFile(SUBSCRIBERS_PATH, users);
-  console.log(`[subscriber] Registered userId: ${userId}`);
+async function registerSubscriber(userId) {
+  const inserted = await upsertPushSubscriber(userId);
+  if (inserted) {
+    console.log(`[subscriber] Registered userId: ${userId}`);
+  }
 }
 
 function getDailyPushState() {
@@ -291,7 +289,7 @@ function buildTodayVocabText(theme, items) {
 
 async function runDailyPushForToday(dateStr) {
   const state = getDailyPushState();
-  const subscribers = getSubscribers();
+  const subscribers = await getSubscribers();
   console.log(`[daily-push] start date=${dateStr}, subscribers=${subscribers.length}`);
 
   if (subscribers.length === 0) {
@@ -424,7 +422,11 @@ async function handleEvent(event) {
   const userText = event.message.text.trim();
   console.log("👤 使用者輸入：", userText);
   const userId = event.source.userId; // 統一在這裡宣告
-  registerSubscriber(userId);
+  try {
+    await registerSubscriber(userId);
+  } catch (err) {
+    console.error("[subscriber] register failed:", err);
+  }
 
   // 1️⃣ 指令模式：/today
   if (userText === "/today") {

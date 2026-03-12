@@ -6,6 +6,7 @@ import { google } from "googleapis";
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = "Vocabulary"; // 你的工作表名稱
 const WRONG_SHEET_NAME = "WrongAnswers"; // 👈 新增這行
+const SUBSCRIBER_SHEET_NAME = "Subscribers"; // push subscribers
 
 
 if (!SPREADSHEET_ID) {
@@ -228,6 +229,46 @@ export async function getRecentSentWords({ days = 30, source = "today" } = {}) {
   }
 
   return words;
+}
+
+/**
+ * Load subscriber userIds from Subscribers sheet (column A).
+ */
+export async function getPushSubscribers() {
+  const sheets = await getSheets();
+  const range = `${SUBSCRIBER_SHEET_NAME}!A2:A`;
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+
+  const rows = res.data.values || [];
+  return rows
+    .map((row) => String(row[0] || "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Add subscriber userId if not exists.
+ */
+export async function upsertPushSubscriber(userId) {
+  const uid = String(userId || "").trim();
+  if (!uid) return false;
+
+  const current = await getPushSubscribers();
+  if (current.includes(uid)) return false;
+
+  const sheets = await getSheets();
+  const values = [[uid, new Date().toISOString()]];
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SUBSCRIBER_SHEET_NAME}!A2:B`,
+    valueInputOption: "RAW",
+    requestBody: { values },
+  });
+
+  return true;
 }
 export async function appendWrongAnswers(items) {
   const sheets = await getSheets();
