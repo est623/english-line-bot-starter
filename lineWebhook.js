@@ -1,5 +1,4 @@
-﻿// lineWebhook.js
-import "dotenv/config";
+﻿import "dotenv/config";
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -14,16 +13,33 @@ import {
   checkWordExists,
   findVocabByWord,
   getAllVocab,
-  appendWrongAnswers, // ?? ?啣?嚗憿神??
+  appendWrongAnswers,
   getPushSubscribers,
   upsertPushSubscriber,
 } from "./googleSheetClient.js";
 import { getThemeForDate } from "./themeState.js";
 
-// ?脣?雿輻??皜祇????
-const quizSessions = new Map();
-// userId -> { questions: [...], current: 0, correct: 0 }
+// -----------------------------
+// Runtime constants
+// -----------------------------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
+const DAILY_PUSH_STATE_PATH = path.join(__dirname, "dailyPushState.json");
+const TAIPEI_TIMEZONE = "Asia/Taipei";
+const DAILY_PUSH_HOUR = 7;
+const DAILY_PUSH_MINUTE = 0;
+const DAILY_WORD_COUNT = 5;
+const LOOKBACK_DAYS = 30;
+const MAX_RETRY_ROUNDS = 5;
+
+// Quiz state in memory
+const quizSessions = new Map();
+// userId -> { questions: [...], current: number, correct: number }
+
+// -----------------------------
+// Utility helpers
+// -----------------------------
 function shuffle(array) {
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -32,88 +48,13 @@ function shuffle(array) {
   return array;
 }
 
-// 撱箇?皜祇?憿嚗?銝剜??貉??
-function buildQuizQuestions(vocabItems, count = 5) {
-  const questions = [];
-
-  // ?蕪????word / zh ?芾???
-  const pool = vocabItems.filter((v) => v && v.word && v.zh);
-
-  // ?冽??賢閬?憿
-  const picked = shuffle([...pool]).slice(0, count);
-
-  for (const item of picked) {
-    const correct = item.word;
-
-    // ??銝隞賬????航炊蝑?皜??
-    const wrongCandidates = Array.from(
-      new Set(
-        pool
-          .filter((v) => v.word !== correct) // 銝頝迤閫??璅?
-          .map((v) => v.word)
-      )
-    );
-
-    // ??3 ???
-    const wrongWords = shuffle(wrongCandidates).slice(0, 3);
-
-    // 甇?圾 + ?航炊?賊?
-    let options = [correct, ...wrongWords];
-    options = shuffle(options);
-
-    // 靽璈嚗???蝔格芰?瘜???options 鋆⊥??迤閫??撠勗撥?嗅??
-    if (!options.includes(correct)) {
-      options[0] = correct;
-      options = shuffle(options);
-    }
-
-    questions.push({
-      zh: item.zh, // 憿憿舐內?葉??
-      word: correct, // 甇?Ⅱ?望?
-      options, // ???
-      answer: correct, // 甇?圾嚗靘??
-    });
-  }
-
-  return questions;
+function normalizeWordKey(word) {
+  return String(word || "").trim().toLowerCase();
 }
 
-// ?Ｙ????柴??舐隞塚??嫣噶??雿輻嚗?
-function buildQuizQuestionMessage(q, index, total) {
-  const text = `蝚?${index + 1} 憿?/ ??${total} 憿?
-??{q.zh}??甇?Ⅱ?望??臬銝??
-
-A. ${q.options[0]}
-B. ${q.options[1]}
-C. ${q.options[2]}
-D. ${q.options[3]}
-`;
-
-  const quick = q.options.map((opt, i) => ({
-    type: "action",
-    action: {
-      type: "message",
-      label: String.fromCharCode(65 + i), // A/B/C/D
-      text: String.fromCharCode(65 + i),
-    },
-  }));
-
-  return {
-    type: "text",
-    text,
-    quickReply: { items: quick },
-  };
+function isSingleEnglishWord(text) {
+  return /^[A-Za-z\-]+$/.test(text.trim());
 }
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DAILY_PUSH_STATE_PATH = path.join(__dirname, "dailyPushState.json");
-const TAIPEI_TIMEZONE = "Asia/Taipei";
-const DAILY_PUSH_HOUR = 7;
-const DAILY_PUSH_MINUTE = 0;
-const DAILY_WORD_COUNT = 5;
-const LOOKBACK_DAYS = 30;
-const MAX_RETRY_ROUNDS = 5;
 
 function readJsonFile(filePath, fallbackValue) {
   try {
@@ -164,6 +105,80 @@ function getTodayTaipeiDateStr() {
   return getTaipeiNowParts().dateStr;
 }
 
+function pickFreshVocabItems(candidates, usedWords, limit) {
+  const picked = [];
+  for (const item of candidates || []) {
+    const key = normalizeWordKey(item && item.word);
+    if (!key) continue;
+    if (usedWords.has(key)) continue;
+
+    usedWords.add(key);
+    picked.push(item);
+    if (picked.length >= limit) break;
+  }
+  return picked;
+}
+
+// -----------------------------
+// Quiz helpers
+// -----------------------------
+function buildQuizQuestions(vocabItems, count = 5) {
+  const questions = [];
+  const pool = vocabItems.filter((v) => v && v.word && v.zh);
+  const picked = shuffle([...pool]).slice(0, count);
+
+  for (const item of picked) {
+    const correct = item.word;
+
+    const wrongCandidates = Array.from(
+      new Set(
+        pool
+          .filter((v) => v.word !== correct)
+          .map((v) => v.word)
+      )
+    );
+
+    const wrongWords = shuffle(wrongCandidates).slice(0, 3);
+    let options = shuffle([correct, ...wrongWords]);
+
+    if (!options.includes(correct)) {
+      options[0] = correct;
+      options = shuffle(options);
+    }
+
+    questions.push({
+      zh: item.zh,
+      word: correct,
+      options,
+      answer: correct,
+    });
+  }
+
+  return questions;
+}
+
+function buildQuizQuestionMessage(q, index, total) {
+  const text = `Question ${index + 1}/${total}\n\nWhat is the correct English word for \"${q.zh}\"?\n\nA. ${q.options[0]}\nB. ${q.options[1]}\nC. ${q.options[2]}\nD. ${q.options[3]}`;
+
+  const quick = q.options.map((_, i) => ({
+    type: "action",
+    action: {
+      type: "message",
+      label: String.fromCharCode(65 + i),
+      text: String.fromCharCode(65 + i),
+    },
+  }));
+
+  return {
+    type: "text",
+    text,
+    quickReply: { items: quick },
+  };
+}
+
+// -----------------------------
+// Subscriber + daily push state
+// -----------------------------
 async function getSubscribers() {
   return await getPushSubscribers();
 }
@@ -197,23 +212,6 @@ function saveDailyPushState(state) {
   writeJsonFile(DAILY_PUSH_STATE_PATH, state);
 }
 
-function normalizeWordKey(word) {
-  return String(word || "").trim().toLowerCase();
-}
-
-function pickFreshVocabItems(candidates, usedWords, limit) {
-  const picked = [];
-  for (const item of candidates || []) {
-    const key = normalizeWordKey(item && item.word);
-    if (!key) continue;
-    if (usedWords.has(key)) continue;
-
-    usedWords.add(key);
-    picked.push(item);
-    if (picked.length >= limit) break;
-  }
-  return picked;
-}
 function markUserPushAttempt(state, dateStr, userId, status, errorMessage = "") {
   if (!state.sentByDate[dateStr]) state.sentByDate[dateStr] = {};
   state.sentByDate[dateStr][userId] = {
@@ -223,6 +221,9 @@ function markUserPushAttempt(state, dateStr, userId, status, errorMessage = "") 
   };
 }
 
+// -----------------------------
+// Daily vocab generation
+// -----------------------------
 async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
   const todayStr = dateStr || getTodayTaipeiDateStr();
   const theme = getThemeForDate(todayStr);
@@ -234,10 +235,12 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
   });
 
   let items = [...existing];
+
   const recentWords = await getRecentSentWords({
     days: LOOKBACK_DAYS,
     source: "today",
   });
+
   const usedWords = new Set(recentWords.map(normalizeWordKey).filter(Boolean));
 
   for (const item of items) {
@@ -266,9 +269,7 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
   }
 
   if (items.length < count) {
-    console.warn(
-      `[today] vocab not full after retries: got ${items.length}/${count}`
-    );
+    console.warn(`[today] vocab not full after retries: got ${items.length}/${count}`);
   }
 
   return { dateStr: todayStr, theme, items };
@@ -287,9 +288,29 @@ function buildTodayVocabText(theme, items) {
   return lines.join("\n");
 }
 
+// -----------------------------
+// LINE config + app
+// -----------------------------
+const config = {
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
+};
+
+if (!config.channelAccessToken || !config.channelSecret) {
+  console.error("Missing LINE_CHANNEL_ACCESS_TOKEN or LINE_CHANNEL_SECRET");
+  process.exit(1);
+}
+
+const app = express();
+const client = new Client(config);
+
+// -----------------------------
+// Daily push scheduler
+// -----------------------------
 async function runDailyPushForToday(dateStr) {
   const state = getDailyPushState();
   const subscribers = await getSubscribers();
+
   console.log(`[daily-push] start date=${dateStr}, subscribers=${subscribers.length}`);
 
   if (subscribers.length === 0) {
@@ -308,6 +329,7 @@ async function runDailyPushForToday(dateStr) {
   }
 
   const text = buildTodayVocabText(theme, items).slice(0, 4900);
+
   for (const userId of subscribers) {
     if (state.sentByDate?.[dateStr]?.[userId]) {
       console.log(`[daily-push] skip already attempted user=${userId} date=${dateStr}`);
@@ -347,7 +369,7 @@ async function tryRunDailyPushSchedulerTick() {
 
 function startDailyPushScheduler() {
   console.log(
-    `[daily-push] scheduler started at ${DAILY_PUSH_HOUR.toString().padStart(2, "0")}:${DAILY_PUSH_MINUTE.toString().padStart(2, "0")} (${TAIPEI_TIMEZONE})`
+    `[daily-push] scheduler started at ${String(DAILY_PUSH_HOUR).padStart(2, "0")}:${String(DAILY_PUSH_MINUTE).padStart(2, "0")} (${TAIPEI_TIMEZONE})`
   );
 
   void tryRunDailyPushSchedulerTick();
@@ -356,37 +378,24 @@ function startDailyPushScheduler() {
   }, 30 * 1000);
 }
 
-const config = {
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.LINE_CHANNEL_SECRET,
-};
-
-if (!config.channelAccessToken || !config.channelSecret) {
-  console.error("??蝻箏? LINE_CHANNEL_ACCESS_TOKEN ??LINE_CHANNEL_SECRET嚗?瑼Ｘ .env");
-  process.exit(1);
-}
-
-const app = express();
-const client = new Client(config);
-
+// -----------------------------
+// Routes
+// -----------------------------
 app.post("/webhook", middleware(config), async (req, res) => {
   try {
-    console.log("???嗅 LINE webhook嚗?, JSON.stringify(req.body, null, 2));
-    const events = (req.body && req.body.events) ? req.body.events : [];
+    console.log("Received LINE webhook:", JSON.stringify(req.body, null, 2));
+    const events = req.body?.events || [];
 
-    if (events.length === 0) {
-      return res.status(200).end();
-    }
+    if (events.length === 0) return res.status(200).end();
 
     await Promise.all(events.map(handleEvent));
     return res.status(200).end();
   } catch (err) {
-    console.error("?? webhook ??隤歹?", err);
+    console.error("Error handling webhook:", err);
     return res.status(500).end();
   }
 });
 
-// ?斗?臭??胯銝?望??桀???
 app.post("/jobs/daily-push", async (req, res) => {
   try {
     const providedToken = req.headers["x-job-token"];
@@ -409,26 +418,27 @@ app.post("/jobs/daily-push", async (req, res) => {
     });
   }
 });
-function isSingleEnglishWord(text) {
-  return /^[A-Za-z\-]+$/.test(text.trim());
-}
 
-
+// -----------------------------
+// Message handler
+// -----------------------------
 async function handleEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") {
     return Promise.resolve(null);
   }
 
   const userText = event.message.text.trim();
-  console.log("? 雿輻?撓?伐?", userText);
-  const userId = event.source.userId; // 蝯曹??券ㄐ摰??
+  const userId = event.source.userId;
+
+  console.log("User input:", userText);
+
   try {
     await registerSubscriber(userId);
   } catch (err) {
     console.error("[subscriber] register failed:", err);
   }
 
-  // 1儭 ?誘璅∪?嚗?today
+  // /today
   if (userText === "/today") {
     try {
       const { theme, items } = await getOrCreateTodayVocab({
@@ -455,7 +465,7 @@ async function handleEvent(event) {
     }
   }
 
-  // 2儭 ?誘璅∪?嚗?quiz5 ???冽???5 憿?
+  // /quiz5
   if (userText === "/quiz5") {
     try {
       const vocabItems = await getAllVocab();
@@ -463,35 +473,27 @@ async function handleEvent(event) {
       if (!vocabItems || vocabItems.length < 5) {
         return client.replyMessage(event.replyToken, {
           type: "text",
-          text: "?必 憿澈銝雲 5 憿??⊥???皜祇?",
+          text: "Not enough vocab to start a 5-question quiz.",
         });
       }
 
       const questions = buildQuizQuestions(vocabItems, 5);
+      quizSessions.set(userId, { questions, current: 0, correct: 0 });
 
-      quizSessions.set(userId, {
-        questions,
-        current: 0,
-        correct: 0,
-      });
-
-      const firstMsg = buildQuizQuestionMessage(
-        questions[0],
-        0,
-        questions.length
+      return client.replyMessage(
+        event.replyToken,
+        buildQuizQuestionMessage(questions[0], 0, questions.length)
       );
-
-      return client.replyMessage(event.replyToken, firstMsg);
     } catch (err) {
-      console.error("?? /quiz5 ?潛??航炊嚗?, err);
+      console.error("Error handling /quiz5:", err);
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: "? ?Ｙ?皜祇???隤歹??臭誑蝔??岫銝甈～?,
+        text: "Failed to start quiz. Please try again later.",
       });
     }
   }
 
-  // 3儭 皜祇?雿?璅∪?嚗?摰??曉?亙摮???嚗?
+  // quiz answer mode
   if (quizSessions.has(userId)) {
     const session = quizSessions.get(userId);
     const q = session.questions[session.current];
@@ -500,27 +502,26 @@ async function handleEvent(event) {
     if (ansIndex === -1) {
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: "隢 A / B / C / D 雿???",
+        text: "Please answer with A, B, C, or D.",
       });
     }
 
     const chosen = q.options[ansIndex];
-
     let feedback = "";
+
     if (chosen === q.answer) {
       session.correct++;
-      feedback = `??蝑?鈭?${q.answer} = ${q.zh}`;
+      feedback = `Correct: ${q.answer} = ${q.zh}`;
     } else {
-      feedback = `??蝑鈭?甇?Ⅱ蝑??荔?${q.answer}嚗?{q.zh}嚗;
+      feedback = `Wrong. Correct answer: ${q.answer} (${q.zh})`;
 
-      // ?? ?啣?嚗憿神??WrongAnswers
       try {
         await appendWrongAnswers([
           {
             userId,
             word: q.word,
             zh: q.zh,
-            chosen, // 雿輻??啁??航炊蝑?
+            chosen,
             is_correct: false,
             question_zh: q.zh,
             options: q.options,
@@ -528,22 +529,15 @@ async function handleEvent(event) {
           },
         ]);
       } catch (err) {
-        console.error("撖怠?舫?蝝?隤歹?", err);
+        console.error("Failed to append wrong answer:", err);
       }
     }
 
     session.current++;
 
-    // 撌脩?雿?摰?敺?憿?
     if (session.current >= session.questions.length) {
       quizSessions.delete(userId);
-
-      const summaryText = `?? 皜祇?蝯?嚗?
-
-??5 憿?雿?撠? ${session.correct} 憿?
-甇?Ⅱ??${Math.round((session.correct / 5) * 100)}%
-
-頛詨 /quiz5 ??銝甈∪嚗;
+      const summaryText = `Quiz finished!\n\nCorrect: ${session.correct}/5\nAccuracy: ${Math.round((session.correct / 5) * 100)}%\n\nType /quiz5 to play again.`;
 
       return client.replyMessage(event.replyToken, [
         { type: "text", text: feedback },
@@ -551,13 +545,8 @@ async function handleEvent(event) {
       ]);
     }
 
-    // ??銝?憿???閬?憿????銝?憿?
     const nextQ = session.questions[session.current];
-    const nextMsg = buildQuizQuestionMessage(
-      nextQ,
-      session.current,
-      session.questions.length
-    );
+    const nextMsg = buildQuizQuestionMessage(nextQ, session.current, session.questions.length);
 
     return client.replyMessage(event.replyToken, [
       { type: "text", text: feedback },
@@ -565,7 +554,7 @@ async function handleEvent(event) {
     ]);
   }
 
-  // 4儭 ?亙摮芋撘??桐??望??桀?
+  // word lookup mode
   if (isSingleEnglishWord(userText)) {
     try {
       const inputWord = userText.toLowerCase();
@@ -594,12 +583,11 @@ async function handleEvent(event) {
 
       if (item) {
         const exists = await checkWordExists(item.word);
-
         if (!exists) {
-          console.log(`?? ?啣摮?撖怠閰衣?銵???${item.word}`);
+          console.log(`New lookup word appended: ${item.word}`);
           await appendVocabRows([item], { source: "lookup" });
         } else {
-          console.log(`??撌脣??剁?銝神????${item.word}`);
+          console.log(`Lookup word already exists: ${item.word}`);
         }
       }
 
@@ -608,21 +596,21 @@ async function handleEvent(event) {
         text: (lineText + "\n\nsource: gemini").slice(0, 4900),
       });
     } catch (err) {
-      console.error("?亙摮??潛??航炊嚗?, err);
+      console.error("Error looking up word:", err);
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: "? ?亙摮??潛??航炊嚗隞亦?敺?閰虫?甈～?,
+        text: "Word lookup failed. Please try again later.",
       });
     }
   }
 
-  // 5儭 ?嗡?閮嚗陛?格?蝷?
+  // fallback help
   const helpText =
-    "?剁??雿??望??桀?撠鼠????\n\n" +
-    "雿隞仿見頝?鈭?嚗n" +
-    "??頛詨 /today???蝯虫? 5 ???乩蜓憿摮????閰衣?銵剁?\n" +
-    "??頛詨 /quiz5 ???冽??? 5 憿摮?皜祇?\n" +
-    "??頛詨銝??摮?靘?嚗bandon嚗? ?交????儔摮?靘\n";
+    "I am your English vocab bot.\n\n" +
+    "Commands:\n" +
+    "- /today : get today's vocab list\n" +
+    "- /quiz5 : start a 5-question quiz\n" +
+    "- send one English word to look it up";
 
   return client.replyMessage(event.replyToken, {
     type: "text",
@@ -632,8 +620,7 @@ async function handleEvent(event) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`?? LINE webhook server is running on port ${PORT}`);
-  console.log(`   ?曉?冽璈?http://localhost:${PORT}/ 嚗?敺 POST /webhook ??LINE`);
+  console.log(`LINE webhook server is running on port ${PORT}`);
+  console.log(`Local test URL: http://localhost:${PORT}/ (POST /webhook for LINE)`);
   startDailyPushScheduler();
 });
-
