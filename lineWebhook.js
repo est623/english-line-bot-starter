@@ -276,16 +276,28 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
 }
 
 function buildTodayVocabText(theme, items) {
-  const lines = [`Today vocab (${theme})`];
-  for (const item of items) {
-    lines.push(
-      `\n- ${item.word} (${item.pos || ""})`,
-      `ZH: ${item.zh || ""}`,
-      `Example: ${item.example || item.example_en || ""}`,
-      `${item.example_zh || ""}`
-    );
-  }
-  return lines.join("\n");
+  const safeTheme = String(theme || "").trim() || "未分類";
+  const list = Array.isArray(items) ? items : [];
+
+  const blocks = list.map((item) => {
+    const word = String(item?.word || "").trim();
+    const pos = String(item?.pos || "").trim();
+    const zh = String(item?.zh || "").trim();
+    const example = String(item?.example || item?.example_en || "").trim();
+    const exampleZh = String(item?.example_zh || "").trim();
+    if (!word && !pos && !zh && !example && !exampleZh) return "";
+
+    const firstLine = pos ? `📘 ${word}（${pos}）` : `📘 ${word}`;
+    const lines = [firstLine];
+
+    if (zh) lines.push(`中文：${zh}`);
+    if (example) lines.push(`例句：${example}`);
+    if (exampleZh) lines.push(`翻譯：${exampleZh}`);
+
+    return lines.join("\n");
+  });
+
+  return [`🌟 今日單字（${safeTheme}）`, ...blocks.filter(Boolean)].join("\n\n");
 }
 
 // -----------------------------
