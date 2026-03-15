@@ -14,6 +14,7 @@ import {
   findVocabByWord,
   getAllVocab,
   getWrongWordsByUser,
+  upsertQuizCheckinProgress,
   appendWrongAnswers,
   getPushSubscribers,
   upsertPushSubscriber,
@@ -206,6 +207,26 @@ function buildQuizSummaryText(correct, total, quizType = "/quiz5") {
     `正確率：${accuracy}%\n\n` +
     `想再玩一次請輸入：${replayCommand}`
   );
+}
+
+function buildCheckInSuccessText(streakDays, totalQuizCheckins) {
+  const safeStreak = Number.isFinite(streakDays) && streakDays > 0 ? streakDays : 1;
+  const safeTotal = Number.isFinite(totalQuizCheckins) && totalQuizCheckins > 0
+    ? totalQuizCheckins
+    : 1;
+
+  const lines = [
+    "🔥 今日打卡成功！",
+    "",
+    `你已連續學習 ${safeStreak} 天`,
+    `累積完成測驗：${safeTotal} 次`,
+  ];
+
+  if ([7, 14, 30].includes(safeStreak)) {
+    lines.push("", `🏅 里程碑達成：連續 ${safeStreak} 天！`);
+  }
+
+  return lines.join("\n");
 }
 
 // -----------------------------
@@ -646,11 +667,30 @@ async function handleEvent(event) {
         session.questions.length,
         session.quizType
       );
-
-      return client.replyMessage(event.replyToken, [
+      const messages = [
         { type: "text", text: feedback },
         { type: "text", text: summaryText },
-      ]);
+      ];
+
+      if (session.quizType === "/quiz5") {
+        try {
+          const checkin = await upsertQuizCheckinProgress({
+            userId,
+            checkinDate: getTodayTaipeiDateStr(),
+          });
+
+          if (checkin?.checkedIn) {
+            messages.push({
+              type: "text",
+              text: buildCheckInSuccessText(checkin.streakDays, checkin.totalQuizCheckins),
+            });
+          }
+        } catch (err) {
+          console.error("Failed to update quiz check-in progress:", err);
+        }
+      }
+
+      return client.replyMessage(event.replyToken, messages);
     }
 
     const nextQ = session.questions[session.current];

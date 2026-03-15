@@ -7,6 +7,7 @@ const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = "Vocabulary"; // 你的工作表名稱
 const WRONG_SHEET_NAME = "WrongAnswers"; // 👈 新增這行
 const SUBSCRIBER_SHEET_NAME = "Subscribers"; // push subscribers
+const LEARNING_PROGRESS_SHEET_NAME = "LearningProgress"; // quiz check-in progress
 
 
 if (!SPREADSHEET_ID) {
@@ -16,6 +17,19 @@ if (!SPREADSHEET_ID) {
 
 // 建立 Google Sheets Client（共用）
 let _sheets = null;
+
+function parsePositiveInt(value, fallback = 0) {
+  const n = Number.parseInt(String(value || ""), 10);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return n;
+}
+
+function getPreviousDateStr(dateStr) {
+  const [y, m, d] = String(dateStr || "").split("-").map((v) => Number.parseInt(v, 10));
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return "";
+  const t = Date.UTC(y, m - 1, d) - 24 * 60 * 60 * 1000;
+  return new Date(t).toISOString().slice(0, 10);
+}
 
 async function getSheets() {
   if (_sheets) return _sheets;
@@ -303,6 +317,83 @@ export async function appendWrongAnswers(items) {
 /**
  * 🟦 讀取全部單字（給 /quiz5 用）
  */
+export async function upsertQuizCheckinProgress({ userId, checkinDate }) {
+  const uid = String(userId || "").trim();
+  const dateStr = String(checkinDate || "").trim();
+  if (!uid || !dateStr) {
+    return { checkedIn: false, streakDays: 0, totalQuizCheckins: 0 };
+  }
+
+  const sheets = await getSheets();
+  const range = `${LEARNING_PROGRESS_SHEET_NAME}!A2:E`;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+
+  const rows = res.data.values || [];
+  const nowIso = new Date().toISOString();
+
+  let foundIndex = -1;
+  let foundRow = null;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const rowUserId = String(row[0] || "").trim();
+    if (rowUserId === uid) {
+      foundIndex = i;
+      foundRow = row;
+      break;
+    }
+  }
+
+  let lastDate = "";
+  let streakDays = 0;
+  let totalQuizCheckins = 0;
+
+  if (foundRow) {
+    lastDate = String(foundRow[1] || "").trim();
+    streakDays = parsePositiveInt(foundRow[2], 0);
+    totalQuizCheckins = parsePositiveInt(foundRow[3], 0);
+  }
+
+  if (lastDate === dateStr) {
+    return {
+      checkedIn: false,
+      streakDays,
+      totalQuizCheckins,
+    };
+  }
+
+  const yesterday = getPreviousDateStr(dateStr);
+  const newStreakDays = lastDate === yesterday ? streakDays + 1 : 1;
+  const newTotalQuizCheckins = totalQuizCheckins + 1;
+
+  const values = [[uid, dateStr, String(newStreakDays), String(newTotalQuizCheckins), nowIso]];
+
+  if (foundIndex >= 0) {
+    const updateRange = `${LEARNING_PROGRESS_SHEET_NAME}!A${foundIndex + 2}:E${foundIndex + 2}`;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: updateRange,
+      valueInputOption: "RAW",
+      requestBody: { values },
+    });
+  } else {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${LEARNING_PROGRESS_SHEET_NAME}!A2:E`,
+      valueInputOption: "RAW",
+      requestBody: { values },
+    });
+  }
+
+  return {
+    checkedIn: true,
+    streakDays: newStreakDays,
+    totalQuizCheckins: newTotalQuizCheckins,
+  };
+}
+
 export async function getWrongWordsByUser(userId) {
   const uid = String(userId || "").trim();
   if (!uid) return [];
