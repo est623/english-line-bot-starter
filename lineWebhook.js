@@ -18,6 +18,7 @@ import {
   upsertPushSubscriber,
 } from "./googleSheetClient.js";
 import { getThemeForDate } from "./themeState.js";
+import { buildLookupWordText } from "./messageFormatters.js";
 
 // -----------------------------
 // Runtime constants
@@ -573,21 +574,9 @@ async function handleEvent(event) {
       const fromSheet = await findVocabByWord(inputWord);
 
       if (fromSheet) {
-        const cachedLines = [
-          "source: sheet",
-          `Word: ${fromSheet.word}`,
-          fromSheet.pos ? `POS: ${fromSheet.pos}` : "POS: ",
-          fromSheet.zh ? `ZH: ${fromSheet.zh}` : "ZH: ",
-          fromSheet.cefr ? `CEFR: ${fromSheet.cefr}` : "CEFR: ",
-          "",
-          "Example:",
-          fromSheet.example ? `- ${fromSheet.example}` : "- (no example)",
-          fromSheet.example_zh ? `- ${fromSheet.example_zh}` : "- (no zh example)",
-        ];
-
         return client.replyMessage(event.replyToken, {
           type: "text",
-          text: cachedLines.join("\n").slice(0, 4900),
+          text: buildLookupWordText(fromSheet).slice(0, 4900),
         });
       }
 
@@ -605,7 +594,7 @@ async function handleEvent(event) {
 
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: (lineText + "\n\nsource: gemini").slice(0, 4900),
+        text: (item ? buildLookupWordText(item) : lineText).slice(0, 4900),
       });
     } catch (err) {
       console.error("Error looking up word:", err);
