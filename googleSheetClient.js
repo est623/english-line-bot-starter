@@ -303,6 +303,41 @@ export async function appendWrongAnswers(items) {
 /**
  * 🟦 讀取全部單字（給 /quiz5 用）
  */
+export async function getWrongWordsByUser(userId) {
+  const uid = String(userId || "").trim();
+  if (!uid) return [];
+
+  const sheets = await getSheets();
+  const range = `${WRONG_SHEET_NAME}!A2:I`;
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+
+  const rows = res.data.values || [];
+  const seen = new Set();
+  const results = [];
+
+  for (const row of rows) {
+    const [rowUserId, word, zh, , isCorrectRaw] = row;
+    if (String(rowUserId || "").trim() !== uid) continue;
+    if (String(isCorrectRaw || "").trim().toUpperCase() === "TRUE") continue;
+
+    const safeWord = String(word || "").trim();
+    const safeZh = String(zh || "").trim();
+    if (!safeWord || !safeZh) continue;
+
+    const key = safeWord.toLowerCase();
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    results.push({ word: safeWord, zh: safeZh });
+  }
+
+  return results;
+}
+
 export async function getAllVocab() {
   const sheets = await getSheets();
 

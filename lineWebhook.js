@@ -13,6 +13,7 @@ import {
   checkWordExists,
   findVocabByWord,
   getAllVocab,
+  getWrongWordsByUser,
   appendWrongAnswers,
   getPushSubscribers,
   upsertPushSubscriber,
@@ -36,7 +37,7 @@ const MAX_RETRY_ROUNDS = 5;
 
 // Quiz state in memory
 const quizSessions = new Map();
-// userId -> { questions: [...], current: number, correct: number }
+// userId -> { questions: [...], current: number, correct: number, quizType: "/quiz5"|"/wrong5" }
 
 // -----------------------------
 // Utility helpers
@@ -123,9 +124,10 @@ function pickFreshVocabItems(candidates, usedWords, limit) {
 // -----------------------------
 // Quiz helpers
 // -----------------------------
-function buildQuizQuestions(vocabItems, count = 5) {
+function buildQuizQuestions(vocabItems, count = 5, distractorPool = vocabItems) {
   const questions = [];
-  const pool = vocabItems.filter((v) => v && v.word && v.zh);
+  const pool = (vocabItems || []).filter((v) => v && v.word && v.zh);
+  const choicePool = (distractorPool || []).filter((v) => v && v.word);
   const picked = shuffle([...pool]).slice(0, count);
 
   for (const item of picked) {
@@ -133,7 +135,7 @@ function buildQuizQuestions(vocabItems, count = 5) {
 
     const wrongCandidates = Array.from(
       new Set(
-        pool
+        choicePool
           .filter((v) => v.word !== correct)
           .map((v) => v.word)
       )
@@ -193,15 +195,16 @@ function buildQuizFeedbackText(isCorrect, answerWord, zh) {
   return `${title}\n\n正確答案：${safeAnswer}\n中文意思：${safeZh}`;
 }
 
-function buildQuizSummaryText(correct, total) {
+function buildQuizSummaryText(correct, total, quizType = "/quiz5") {
   const safeTotal = Number.isFinite(total) && total > 0 ? total : 5;
   const safeCorrect = Number.isFinite(correct) && correct >= 0 ? correct : 0;
   const accuracy = Math.round((safeCorrect / safeTotal) * 100);
+  const replayCommand = quizType === "/wrong5" ? "/wrong5" : "/quiz5";
   return (
     `🎉 測驗完成！\n\n` +
     `答對題數：${safeCorrect} / ${safeTotal}\n` +
     `正確率：${accuracy}%\n\n` +
-    `想再玩一次請輸入：/quiz5`
+    `想再玩一次請輸入：${replayCommand}`
   );
 }
 
@@ -519,7 +522,7 @@ async function handleEvent(event) {
       }
 
       const questions = buildQuizQuestions(vocabItems, 5);
-      quizSessions.set(userId, { questions, current: 0, correct: 0 });
+      quizSessions.set(userId, { questions, current: 0, correct: 0, quizType: "/quiz5" });
 
       return client.replyMessage(
         event.replyToken,
@@ -530,6 +533,66 @@ async function handleEvent(event) {
       return client.replyMessage(event.replyToken, {
         type: "text",
         text: "Failed to start quiz. Please try again later.",
+      });
+    }
+  }
+
+  // /wrong5
+  if (userText === "/wrong5") {
+    try {
+      const wrongWords = await getWrongWordsByUser(userId);
+      if (!wrongWords || wrongWords.length === 0) {
+        return client.replyMessage(event.replyToken, {
+          type: "text",
+          text: "你目前還沒有錯題可以複習，先去做 /quiz5 吧！",
+        });
+      }
+
+      const vocabItems = await getAllVocab();
+      const vocabByWord = new Map();
+      for (const v of vocabItems || []) {
+        const key = normalizeWordKey(v?.word);
+        if (!key || vocabByWord.has(key)) continue;
+        vocabByWord.set(key, v);
+      }
+
+      const reviewItems = wrongWords
+        .map((w) => vocabByWord.get(normalizeWordKey(w.word)))
+        .filter(Boolean);
+
+      if (reviewItems.length === 0) {
+        return client.replyMessage(event.replyToken, {
+          type: "text",
+          text: "你的錯題目前找不到可用題庫資料，請先做 /quiz5 產生新題目後再試。",
+        });
+      }
+
+      const questionCount = Math.min(5, reviewItems.length);
+      const questions = buildQuizQuestions(reviewItems, questionCount, vocabItems);
+
+      if (!questions || questions.length === 0) {
+        return client.replyMessage(event.replyToken, {
+          type: "text",
+          text: "目前暫時無法建立錯題複習，請稍後再試。",
+        });
+      }
+
+      quizSessions.set(userId, {
+        questions,
+        current: 0,
+        correct: 0,
+        quizType: "/wrong5",
+      });
+
+      return client.replyMessage(
+        event.replyToken,
+        buildQuizQuestionMessage(questions[0], 0, questions.length)
+      );
+    } catch (err) {
+      console.error("Error handling /wrong5:", err);
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "啟動錯題複習失敗，請稍後再試。",
       });
     }
   }
@@ -566,7 +629,7 @@ async function handleEvent(event) {
             is_correct: false,
             question_zh: q.zh,
             options: q.options,
-            quiz_type: "/quiz5",
+            quiz_type: session.quizType || "/quiz5",
           },
         ]);
       } catch (err) {
@@ -578,7 +641,11 @@ async function handleEvent(event) {
 
     if (session.current >= session.questions.length) {
       quizSessions.delete(userId);
-      const summaryText = buildQuizSummaryText(session.correct, session.questions.length);
+      const summaryText = buildQuizSummaryText(
+        session.correct,
+        session.questions.length,
+        session.quizType
+      );
 
       return client.replyMessage(event.replyToken, [
         { type: "text", text: feedback },
@@ -639,6 +706,7 @@ async function handleEvent(event) {
     "Commands:\n" +
     "- /today : get today's vocab list\n" +
     "- /quiz5 : start a 5-question quiz\n" +
+    "- /wrong5 : review your wrong answers\n" +
     "- send one English word to look it up";
 
   return client.replyMessage(event.replyToken, {
