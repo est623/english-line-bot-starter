@@ -159,7 +159,16 @@ function buildQuizQuestions(vocabItems, count = 5) {
 }
 
 function buildQuizQuestionMessage(q, index, total) {
-  const text = `Question ${index + 1}/${total}\n\nWhat is the correct English word for \"${q.zh}\"?\n\nA. ${q.options[0]}\nB. ${q.options[1]}\nC. ${q.options[2]}\nD. ${q.options[3]}`;
+  const zh = String(q?.zh || "").trim() || "（題目資料缺漏）";
+  const options = Array.isArray(q?.options) ? q.options : [];
+  const getOption = (i) => String(options[i] || "").trim();
+  const text =
+    `📝 測驗第 ${index + 1} / ${total} 題\n\n` +
+    `請選出「${zh}」對應的正確英文單字：\n\n` +
+    `A. ${getOption(0)}\n` +
+    `B. ${getOption(1)}\n` +
+    `C. ${getOption(2)}\n` +
+    `D. ${getOption(3)}`;
 
   const quick = q.options.map((_, i) => ({
     type: "action",
@@ -175,6 +184,25 @@ function buildQuizQuestionMessage(q, index, total) {
     text,
     quickReply: { items: quick },
   };
+}
+
+function buildQuizFeedbackText(isCorrect, answerWord, zh) {
+  const safeAnswer = String(answerWord || "").trim() || "（無資料）";
+  const safeZh = String(zh || "").trim() || "（無資料）";
+  const title = isCorrect ? "✅ 答對了！" : "❌ 答錯了！";
+  return `${title}\n\n正確答案：${safeAnswer}\n中文意思：${safeZh}`;
+}
+
+function buildQuizSummaryText(correct, total) {
+  const safeTotal = Number.isFinite(total) && total > 0 ? total : 5;
+  const safeCorrect = Number.isFinite(correct) && correct >= 0 ? correct : 0;
+  const accuracy = Math.round((safeCorrect / safeTotal) * 100);
+  return (
+    `🎉 測驗完成！\n\n` +
+    `答對題數：${safeCorrect} / ${safeTotal}\n` +
+    `正確率：${accuracy}%\n\n` +
+    `想再玩一次請輸入：/quiz5`
+  );
 }
 
 // -----------------------------
@@ -515,7 +543,7 @@ async function handleEvent(event) {
     if (ansIndex === -1) {
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: "Please answer with A, B, C, or D.",
+        text: "請用 A、B、C 或 D 作答。",
       });
     }
 
@@ -524,9 +552,9 @@ async function handleEvent(event) {
 
     if (chosen === q.answer) {
       session.correct++;
-      feedback = `Correct: ${q.answer} = ${q.zh}`;
+      feedback = buildQuizFeedbackText(true, q.answer, q.zh);
     } else {
-      feedback = `Wrong. Correct answer: ${q.answer} (${q.zh})`;
+      feedback = buildQuizFeedbackText(false, q.answer, q.zh);
 
       try {
         await appendWrongAnswers([
@@ -550,7 +578,7 @@ async function handleEvent(event) {
 
     if (session.current >= session.questions.length) {
       quizSessions.delete(userId);
-      const summaryText = `Quiz finished!\n\nCorrect: ${session.correct}/5\nAccuracy: ${Math.round((session.correct / 5) * 100)}%\n\nType /quiz5 to play again.`;
+      const summaryText = buildQuizSummaryText(session.correct, session.questions.length);
 
       return client.replyMessage(event.replyToken, [
         { type: "text", text: feedback },
