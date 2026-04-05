@@ -8,6 +8,7 @@ const SHEET_NAME = "Vocabulary"; // 你的工作表名稱
 const WRONG_SHEET_NAME = "WrongAnswers"; // 👈 新增這行
 const SUBSCRIBER_SHEET_NAME = "Subscribers"; // push subscribers
 const LEARNING_PROGRESS_SHEET_NAME = "LearningProgress"; // quiz check-in progress
+const TODAY_TIMEZONE = "Asia/Taipei";
 
 
 if (!SPREADSHEET_ID) {
@@ -29,6 +30,28 @@ function getPreviousDateStr(dateStr) {
   if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return "";
   const t = Date.UTC(y, m - 1, d) - 24 * 60 * 60 * 1000;
   return new Date(t).toISOString().slice(0, 10);
+}
+
+function toDateStrInTimezone(value, timeZone = TODAY_TIMEZONE) {
+  if (!value) return "";
+
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (!Number.isFinite(date.getTime())) return "";
+
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  const parts = formatter.formatToParts(date);
+  const year = parts.find((p) => p.type === "year")?.value || "";
+  const month = parts.find((p) => p.type === "month")?.value || "";
+  const day = parts.find((p) => p.type === "day")?.value || "";
+
+  if (!year || !month || !day) return "";
+  return `${year}-${month}-${day}`;
 }
 
 async function getSheets() {
@@ -124,7 +147,8 @@ export async function getTodayVocab({ theme, dateStr, limit = 10 }) {
     if (rowTheme !== theme) continue;
     if (!created_at) continue;
 
-    const rowDate = String(created_at).slice(0, 10);
+    const rowDate = toDateStrInTimezone(created_at);
+    if (!rowDate) continue;
     if (rowDate !== dateStr) continue;
 
     results.push({
