@@ -29,6 +29,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const DAILY_PUSH_STATE_PATH = path.join(__dirname, "dailyPushState.json");
+const VOCAB_CSV_PATH = path.join(__dirname, "vocab.csv");
 const TAIPEI_TIMEZONE = "Asia/Taipei";
 const DAILY_PUSH_HOUR = 7;
 const DAILY_PUSH_MINUTE = 0;
@@ -76,6 +77,73 @@ function writeJsonFile(filePath, data) {
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
   } catch (err) {
     console.error("[state] Failed to write JSON:", filePath, err);
+  }
+}
+
+function parseCsvLine(line) {
+  const fields = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const next = line[i + 1];
+
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"';
+      i++;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      fields.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  fields.push(current);
+  return fields.map((field) => field.trim());
+}
+
+function loadVocabCsvWordSet(filePath = VOCAB_CSV_PATH) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      console.warn(`[vocab-csv] File not found, skip CSV de-dup: ${filePath}`);
+      return new Set();
+    }
+
+    const raw = fs.readFileSync(filePath, "utf8").trim();
+    if (!raw) return new Set();
+
+    const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    if (lines.length < 2) return new Set();
+
+    const headers = parseCsvLine(lines[0]).map((header) => header.trim().toLowerCase());
+    const wordIndex = headers.indexOf("word");
+    if (wordIndex === -1) {
+      console.warn("[vocab-csv] Missing word header, skip CSV de-dup");
+      return new Set();
+    }
+
+    const words = new Set();
+    for (const line of lines.slice(1)) {
+      const fields = parseCsvLine(line);
+      const key = normalizeWordKey(fields[wordIndex]);
+      if (key) words.add(key);
+    }
+
+    return words;
+  } catch (err) {
+    console.error("[vocab-csv] Failed to read vocab.csv, skip CSV de-dup:", err);
+    return new Set();
   }
 }
 
@@ -280,6 +348,7 @@ function markUserPushAttempt(state, dateStr, userId, status, errorMessage = "") 
 async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
   const todayStr = dateStr || getTodayTaipeiDateStr();
   const theme = getThemeForDate(todayStr);
+  const csvWords = loadVocabCsvWordSet();
 
   const existing = await getTodayVocab({
     theme,
@@ -287,14 +356,23 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
     limit: count,
   });
 
-  let items = [...existing];
+  let items = existing.filter((item) => !csvWords.has(normalizeWordKey(item && item.word)));
+  if (items.length !== existing.length) {
+    console.warn(
+      `[today] excluded ${existing.length - items.length} existing vocab item(s) found in vocab.csv`
+    );
+  }
 
   const recentWords = await getRecentSentWords({
     days: LOOKBACK_DAYS,
     source: "today",
   });
 
-  const usedWords = new Set(recentWords.map(normalizeWordKey).filter(Boolean));
+  const usedWords = new Set(csvWords);
+  for (const word of recentWords) {
+    const key = normalizeWordKey(word);
+    if (key) usedWords.add(key);
+  }
 
   for (const item of items) {
     const key = normalizeWordKey(item && item.word);
