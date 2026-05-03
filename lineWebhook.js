@@ -200,13 +200,14 @@ function buildQuizQuestions(vocabItems, count = 5, distractorPool = vocabItems) 
   const picked = shuffle([...pool]).slice(0, count);
 
   for (const item of picked) {
-    const correct = item.word;
+    const correct = normalizeWordKey(item.word);
+    if (!correct) continue;
 
     const wrongCandidates = Array.from(
       new Set(
         choicePool
-          .filter((v) => v.word !== correct)
-          .map((v) => v.word)
+          .map((v) => normalizeWordKey(v.word))
+          .filter((word) => word && word !== correct)
       )
     );
 
@@ -258,7 +259,7 @@ function buildQuizQuestionMessage(q, index, total) {
 }
 
 function buildQuizFeedbackText(isCorrect, answerWord, zh) {
-  const safeAnswer = String(answerWord || "").trim() || "（無資料）";
+  const safeAnswer = normalizeWordKey(answerWord) || "（無資料）";
   const safeZh = String(zh || "").trim() || "（無資料）";
   const title = isCorrect ? "✅ 答對了！" : "❌ 答錯了！";
   return `${title}\n\n正確答案：${safeAnswer}\n中文意思：${safeZh}`;
