@@ -5,7 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { middleware, Client } from "@line/bot-sdk";
 import { lookupWord } from "./dictionaryClient.js";
-import { generateVocab } from "./vocabGenerator.js";
+import { generateVocab, isGeminiLocationUnsupportedError } from "./vocabGenerator.js";
 import {
   getTodayVocab,
   getRecentSentWords,
@@ -144,6 +144,51 @@ function loadVocabCsvWordSet(filePath = VOCAB_CSV_PATH) {
   } catch (err) {
     console.error("[vocab-csv] Failed to read vocab.csv, skip CSV de-dup:", err);
     return new Set();
+  }
+}
+
+function loadVocabCsvItems(filePath = VOCAB_CSV_PATH) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const raw = fs.readFileSync(filePath, "utf8").trim();
+    if (!raw) return [];
+
+    const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    if (lines.length < 2) return [];
+
+    const headers = parseCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
+    const idx = {
+      theme: headers.indexOf("theme"),
+      word: headers.indexOf("word"),
+      pos: headers.indexOf("pos"),
+      zh: headers.indexOf("zh"),
+      example: headers.indexOf("example"),
+      example_zh: headers.indexOf("example_zh"),
+      cefr: headers.indexOf("cefr"),
+    };
+    if (idx.word === -1) return [];
+
+    const items = [];
+    for (const line of lines.slice(1)) {
+      const fields = parseCsvLine(line);
+      const word = String(fields[idx.word] || "").trim();
+      if (!word) continue;
+
+      items.push({
+        theme: String(fields[idx.theme] || "").trim(),
+        word,
+        pos: String(fields[idx.pos] || "").trim(),
+        zh: String(fields[idx.zh] || "").trim(),
+        example: String(fields[idx.example] || "").trim(),
+        example_zh: String(fields[idx.example_zh] || "").trim(),
+        cefr: String(fields[idx.cefr] || "").trim(),
+      });
+    }
+
+    return items;
+  } catch (err) {
+    console.error("[vocab-csv] Failed to load fallback items:", err);
+    return [];
   }
 }
 
@@ -387,17 +432,46 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
     const need = count - items.length;
     const requestCount = Math.max(need * 2, need);
 
-    const generated = await generateVocab({
-      theme,
-      count: requestCount,
-      bannedWords: Array.from(usedWords),
-    });
+    try {
+      const generated = await generateVocab({
+        theme,
+        count: requestCount,
+        bannedWords: Array.from(usedWords),
+      });
 
-    const freshItems = pickFreshVocabItems(generated, usedWords, need);
-    if (freshItems.length === 0) continue;
+      const freshItems = pickFreshVocabItems(generated, usedWords, need);
+      if (freshItems.length === 0) continue;
 
-    await appendVocabRows(freshItems, { source: "today" });
-    items = items.concat(freshItems);
+      await appendVocabRows(freshItems, { source: "today" });
+      items = items.concat(freshItems);
+    } catch (err) {
+      console.error("[today] generateVocab failed:", err?.message || err);
+
+      if (!isGeminiLocationUnsupportedError(err)) {
+        throw err;
+      }
+
+      const allCsvItems = loadVocabCsvItems().filter((v) => normalizeWordKey(v?.word));
+      const csvThemeItems = allCsvItems.filter((v) => {
+        const itemTheme = String(v?.theme || "").trim().toLowerCase();
+        return itemTheme === String(theme || "").trim().toLowerCase();
+      });
+
+      const fallbackPool = csvThemeItems.length > 0
+        ? shuffle([...csvThemeItems])
+        : shuffle([...allCsvItems]);
+
+      const fallbackPicked = pickFreshVocabItems(fallbackPool, usedWords, need);
+      if (fallbackPicked.length > 0) {
+        console.warn(
+          `[today] Gemini unavailable by location, fallback to vocab.csv count=${fallbackPicked.length}`
+        );
+        await appendVocabRows(fallbackPicked, { source: "today-fallback" });
+        items = items.concat(fallbackPicked);
+      }
+
+      break;
+    }
   }
 
   if (items.length < count) {
