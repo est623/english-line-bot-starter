@@ -446,10 +446,7 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
       items = items.concat(freshItems);
     } catch (err) {
       console.error("[today] generateVocab failed:", err?.message || err);
-
-      if (!isGeminiLocationUnsupportedError(err)) {
-        throw err;
-      }
+      const isLocationBlocked = isGeminiLocationUnsupportedError(err);
 
       const allCsvItems = loadVocabCsvItems().filter((v) => normalizeWordKey(v?.word));
       const csvThemeItems = allCsvItems.filter((v) => {
@@ -464,12 +461,16 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
       const fallbackPicked = pickFreshVocabItems(fallbackPool, usedWords, need);
       if (fallbackPicked.length > 0) {
         console.warn(
-          `[today] Gemini unavailable by location, fallback to vocab.csv count=${fallbackPicked.length}`
+          isLocationBlocked
+            ? `[today] Gemini unavailable by location, fallback to vocab.csv count=${fallbackPicked.length}`
+            : `[today] Gemini generation failed, fallback to vocab.csv count=${fallbackPicked.length}`
         );
         await appendVocabRows(fallbackPicked, { source: "today-fallback" });
         items = items.concat(fallbackPicked);
       }
-
+      if (fallbackPicked.length === 0) {
+        throw err;
+      }
       break;
     }
   }
