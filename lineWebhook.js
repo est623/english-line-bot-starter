@@ -235,6 +235,21 @@ function pickFreshVocabItems(candidates, usedWords, limit) {
   return picked;
 }
 
+function pickFallbackCsvItems(candidates, blockedWords, limit) {
+  const picked = [];
+  const localSeen = new Set();
+  for (const item of candidates || []) {
+    const key = normalizeWordKey(item && item.word);
+    if (!key) continue;
+    if (blockedWords.has(key)) continue;
+    if (localSeen.has(key)) continue;
+    localSeen.add(key);
+    picked.push(item);
+    if (picked.length >= limit) break;
+  }
+  return picked;
+}
+
 // -----------------------------
 // Quiz helpers
 // -----------------------------
@@ -458,7 +473,17 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
         ? shuffle([...csvThemeItems])
         : shuffle([...allCsvItems]);
 
-      const fallbackPicked = pickFreshVocabItems(fallbackPool, usedWords, need);
+      const blockedForFallback = new Set();
+      for (const item of items) {
+        const key = normalizeWordKey(item?.word);
+        if (key) blockedForFallback.add(key);
+      }
+      for (const word of recentWords) {
+        const key = normalizeWordKey(word);
+        if (key) blockedForFallback.add(key);
+      }
+
+      const fallbackPicked = pickFallbackCsvItems(fallbackPool, blockedForFallback, need);
       if (fallbackPicked.length > 0) {
         console.warn(
           isLocationBlocked
