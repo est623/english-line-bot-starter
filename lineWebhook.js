@@ -485,13 +485,17 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
 
       const fallbackPicked = pickFallbackCsvItems(fallbackPool, blockedForFallback, need);
       if (fallbackPicked.length > 0) {
+        const normalizedFallback = fallbackPicked.map((item) => ({
+          ...item,
+          theme,
+        }));
         console.warn(
           isLocationBlocked
-            ? `[today] Gemini unavailable by location, fallback to vocab.csv count=${fallbackPicked.length}`
-            : `[today] Gemini generation failed, fallback to vocab.csv count=${fallbackPicked.length}`
+            ? `[today] Gemini unavailable by location, fallback to vocab.csv count=${normalizedFallback.length}`
+            : `[today] Gemini generation failed, fallback to vocab.csv count=${normalizedFallback.length}`
         );
-        await appendVocabRows(fallbackPicked, { source: "today-fallback" });
-        items = items.concat(fallbackPicked);
+        await appendVocabRows(normalizedFallback, { source: "today-fallback" });
+        items = items.concat(normalizedFallback);
       }
       if (fallbackPicked.length === 0) {
         throw err;
