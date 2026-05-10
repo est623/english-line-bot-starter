@@ -409,7 +409,6 @@ function markUserPushAttempt(state, dateStr, userId, status, errorMessage = "") 
 async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
   const todayStr = dateStr || getTodayTaipeiDateStr();
   const theme = getThemeForDate(todayStr);
-  const csvWords = loadVocabCsvWordSet();
 
   const existing = await getTodayVocab({
     theme,
@@ -417,11 +416,9 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
     limit: count,
   });
 
-  let items = existing.filter((item) => !csvWords.has(normalizeWordKey(item && item.word)));
-  if (items.length !== existing.length) {
-    console.warn(
-      `[today] excluded ${existing.length - items.length} existing vocab item(s) found in vocab.csv`
-    );
+  let items = existing;
+  if (items.length >= count) {
+    return { dateStr: todayStr, theme, items: items.slice(0, count) };
   }
 
   const recentWords = await getRecentSentWords({
@@ -429,7 +426,7 @@ async function getOrCreateTodayVocab({ dateStr, count = DAILY_WORD_COUNT }) {
     source: "today",
   });
 
-  const usedWords = new Set(csvWords);
+  const usedWords = new Set(loadVocabCsvWordSet());
   for (const word of recentWords) {
     const key = normalizeWordKey(word);
     if (key) usedWords.add(key);
